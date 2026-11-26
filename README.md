@@ -24,6 +24,10 @@ retrieval/lowlevel/dalw-cli verify manual.dalw
 retrieval/lowlevel/dalw-cli search manual.dalw 5 checkpoint
 ~~~
 
+`search` requires every parsed term. `search-any` ranks documents containing at least one. Both use the first 32 distinct query terms. Arabic queries use stemming by default. Set `DALW_EXACT=1` for surface forms or `DALW_EXACT=0` for stemming. Its receipts list the query term hashes in `terms` and the hashes present in that document in `matched_terms`. The desktop option is **Match any word**.
+
+`dalw-cli verify SHARD EXPECTED_BODY_SHA256` compares the verified body with a 64-digit hexadecimal digest you kept separately. Use the `sha256` value printed by `verify` on a trusted copy. The final 32 trailer bytes are excluded from the digest. Set `DALW_VERIFY=1` to check the trailer during a command-line search.
+
 Each matching document produces one line of JSON with its title, source, score, and receipt ID. To index your own UTF-8 TSV, use `dalw-cli index OUT.dalw IN.tsv`. Each row contains the source URL, title, source filename, byte offset, byte length, digest, and text. Offsets and lengths are unsigned decimal integers. The first invalid row stops the import. Add `--skip-invalid` to report and skip malformed rows.
 
 ### Desktop search

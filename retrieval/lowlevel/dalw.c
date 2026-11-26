@@ -259,29 +259,49 @@ size_t dalw_plist_encode(const uint32_t *docs, uint32_t n, uint8_t *out) {
     return pos;
 }
 
+enum { POSTING_BLOCK = 128 };
+
+static size_t block_count(uint32_t df) {
+    return df / POSTING_BLOCK + (df % POSTING_BLOCK != 0);
+}
+
+static uint32_t block_length(uint32_t df, size_t block) {
+    size_t remaining = df - block * POSTING_BLOCK;
+    return remaining < POSTING_BLOCK ? (uint32_t)remaining : POSTING_BLOCK;
+}
+
+static int decode_docs_block(const uint8_t *p, size_t bytes, uint32_t df, size_t b, uint32_t *out) {
+    size_t table = block_count(df) * 8;
+    if (bytes < table) return -1;
+    size_t pos = rd32(p + b * 8 + 4);
+    if (pos < table || pos >= bytes) return -1;
+    unsigned width = p[pos++];
+    uint32_t count = block_length(df, b);
+    if (width > 32 || ((size_t)(count - 1) * width + 7) / 8 > bytes - pos) return -1;
+    uint64_t doc = rd32(p + b * 8);
+    if (!width) {
+        if (doc + count - 1 > UINT32_MAX) return -1;
+        for (uint32_t i = 0; i < count; ++i) out[i] = (uint32_t)doc + i;
+        return 0;
+    }
+    uint64_t bits = 0, mask = (UINT64_C(1) << width) - 1;
+    unsigned available = 0;
+    out[0] = (uint32_t)doc;
+    for (uint32_t i = 1; i < count; ++i) {
+        while (available < width) { bits |= (uint64_t)p[pos++] << available; available += 8; }
+        doc += (bits & mask) + 1;
+        if (doc > UINT32_MAX) return -1;
+        out[i] = (uint32_t)doc;
+        bits >>= width;
+        available -= width;
+    }
+    return 0;
+}
+
 int dalw_plist_decode(const uint8_t *p, size_t bytes, uint32_t df, uint32_t *out) {
-    if (df == 0) return 0;
-    size_t nb = ((size_t)df + 127) / 128;
-    if (bytes < nb * 8) return -1;
-    uint32_t last = 0;
-    for (size_t b = 0; b < nb; b++) {
-        uint32_t first = rd32(p + b * 8); size_t off = rd32(p + b * 8 + 4);
-        uint32_t cnt = (uint32_t)(df - b * 128 < 128 ? df - b * 128 : 128);
-        if (off < nb * 8 || off >= bytes) return -1;
-        unsigned w = p[off++]; if (w > 32) return -1;
-        size_t need = (((size_t)(cnt - 1)) * w + 7) / 8;
-        if (need > bytes - off) return -1;
-        if (b && first <= last) return -1;
-        uint32_t *o = out + b * 128; o[0] = first;
-        uint64_t acc = 0, prev = first; unsigned nbits = 0;
-        uint64_t mask = w == 32 ? 0xFFFFFFFFULL : ((1ULL << w) - 1);
-        for (uint32_t i = 1; i < cnt; i++) {
-            while (nbits < w) { acc |= (uint64_t)p[off++] << nbits; nbits += 8; }
-            uint64_t v = acc & mask; acc >>= w; nbits -= w;
-            prev += v + 1; if (prev > 0xFFFFFFFFULL) return -1;
-            o[i] = (uint32_t)prev;
-        }
-        last = o[cnt - 1];
+    for (size_t b = 0; b < block_count(df); ++b) {
+        uint32_t *block = out + b * POSTING_BLOCK;
+        if (decode_docs_block(p, bytes, df, b, block) < 0 || (b && block[0] <= block[-1])) return -1;
     }
     return 0;
 }
@@ -306,22 +326,34 @@ size_t dalw_tf_encode(const uint32_t *tf, uint32_t n, uint8_t *out) {
     return pos;
 }
 
-int dalw_tf_decode(const uint8_t *p, size_t bytes, uint32_t n, uint32_t *out) {
-    size_t pos = 0, nb = ((size_t)n + 127) / 128;
-    for (size_t b = 0; b < nb; b++) {
-        uint32_t cnt = (uint32_t)(n - b * 128 < 128 ? n - b * 128 : 128);
-        if (pos >= bytes) return -1;
-        unsigned w = p[pos++]; if (w > 32) return -1;
-        size_t need = ((size_t)cnt * w + 7) / 8;
-        if (need > bytes - pos) return -1;
-        uint64_t acc = 0, mask = w == 32 ? 0xFFFFFFFFULL : ((1ULL << w) - 1); unsigned nbits = 0;
-        uint32_t *o = out + b * 128;
-        for (uint32_t i = 0; i < cnt; i++) {
-            while (nbits < w) { acc |= (uint64_t)p[pos++] << nbits; nbits += 8; }
-            uint64_t v = acc & mask; acc >>= w; nbits -= w;
-            if (v == 0xFFFFFFFFULL) return -1;
-            o[i] = (uint32_t)v + 1;
-        }
+static int decode_tf_block(const uint8_t *p, size_t bytes, size_t *offset, uint32_t count, uint32_t *out) {
+    size_t pos = *offset;
+    if (pos >= bytes) return -1;
+    unsigned width = p[pos++];
+    if (width > 32 || ((size_t)count * width + 7) / 8 > bytes - pos) return -1;
+    if (!width) {
+        for (uint32_t i = 0; i < count; ++i) out[i] = 1;
+        *offset = pos;
+        return 0;
+    }
+    uint64_t bits = 0, mask = (UINT64_C(1) << width) - 1;
+    unsigned available = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        while (available < width) { bits |= (uint64_t)p[pos++] << available; available += 8; }
+        uint32_t value = (uint32_t)(bits & mask);
+        if (value == UINT32_MAX) return -1;
+        out[i] = value + 1;
+        bits >>= width;
+        available -= width;
+    }
+    *offset = pos;
+    return 0;
+}
+
+int dalw_tf_decode(const uint8_t *p, size_t bytes, uint32_t df, uint32_t *out) {
+    size_t pos = 0;
+    for (size_t b = 0; b < block_count(df); ++b) {
+        if (decode_tf_block(p, bytes, &pos, block_length(df, b), out + b * POSTING_BLOCK) < 0) return -1;
     }
     return 0;
 }
@@ -630,21 +662,33 @@ static int load_postings(const DalwShard *s, const QTerm *term, uint32_t *out) {
     return out[term->df - 1] < s->ndocs ? 0 : -1;
 }
 
+/* Stable document-frequency order also fixes the floating-point addition order. */
+static int resolve_terms(const DalwShard *s, const uint64_t *keys, size_t n, int any,
+                         QTerm *terms, size_t *count) {
+    *count = 0;
+    for (size_t i = 0; i < n; ++i) {
+        QTerm term;
+        int found = find_term(s, keys[i], &term);
+        if (found < 0) return -1;
+        if (!found) {
+            if (!any) { *count = 0; break; }
+            continue;
+        }
+        size_t j = (*count)++;
+        while (j && terms[j - 1].df > term.df) { terms[j] = terms[j - 1]; --j; }
+        terms[j] = term;
+    }
+    return 0;
+}
+
 /* resolves terms and intersects; *res malloc'd (caller frees), *cnt may be 0. returns <0 on corruption. */
 static int intersect_terms(const DalwShard *s, const uint64_t *hashes, size_t n, QTerm *q,
                            uint32_t **res, size_t *cnt) {
     uint32_t *A = NULL, *B = NULL, *C = NULL; int st = 0;
     *res = NULL; *cnt = 0;
-    for (size_t i = 0; i < n; i++) {
-        int r = find_term(s, hashes[i], &q[i]);
-        if (r < 0) return -1;
-        if (r == 0) return 0;
-    }
-    for (size_t i = 1; i < n; i++) {
-        QTerm t = q[i]; size_t j = i;
-        while (j > 0 && q[j-1].df > t.df) { q[j] = q[j-1]; j--; }
-        q[j] = t;
-    }
+    size_t count;
+    if (resolve_terms(s, hashes, n, 0, q, &count) < 0) return -1;
+    if (!count) return 0;
     A = (uint32_t *)malloc(((size_t)q[0].df + DALW_SLACK) * 4);
     if (!A || load_postings(s, &q[0], A) < 0) { st = -1; goto fail; }
     if (n == 1) { *res = A; *cnt = q[0].df; return 0; }
@@ -713,61 +757,151 @@ static void keep_small(DalwHit *out, size_t used, size_t cap, DalwHit hit) {
     out[pos] = hit;
 }
 
+typedef struct {
+    const QTerm *term;
+    float idf;
+    size_t block, tf_offset;
+    uint32_t docs[POSTING_BLOCK], tf[POSTING_BLOCK], at, count;
+} PostingCursor;
+
+/* An exhausted cursor has count=0. The next block must begin after the previous one. */
+static int next_block(PostingCursor *c, uint32_t ndocs) {
+    const QTerm *t = c->term;
+    if (c->block == block_count(t->df)) { c->count = 0; return 0; }
+    uint32_t previous = c->count ? c->docs[c->count - 1] : 0;
+    c->count = block_length(t->df, c->block);
+    c->at = 0;
+    if (decode_docs_block(t->dp, t->dbytes, t->df, c->block, c->docs) < 0 ||
+        (c->block && c->docs[0] <= previous) || c->docs[c->count - 1] >= ndocs ||
+        decode_tf_block(t->tp, t->tbytes, &c->tf_offset, c->count, c->tf) < 0) return -1;
+    ++c->block;
+    return 0;
+}
+
+enum { SMALL_TOP_K = 64 };
+
+typedef struct { DalwHit *hits; size_t seen, cap; } TopHits;
+
+static inline void keep_ranked(DalwHit *out, size_t seen, size_t limit, int needs_heap, DalwHit hit) {
+    if (limit <= SMALL_TOP_K) {
+        keep_small(out, seen < limit ? seen : limit, limit, hit);
+    } else if (seen < limit) {
+        out[seen] = hit;
+        if (seen + 1 == limit && needs_heap)
+            for (size_t i = limit / 2; i; --i) sift_hit(out, limit, i - 1);
+    } else if (hit.score > out[0].score) {
+        out[0] = hit;
+        sift_hit(out, limit, 0);
+    }
+}
+
+/* A single term has exactly df hits. Use each block's position in that sequence. */
+static int score_single(const DalwShard *s, PostingCursor *term, float avg, TopHits *top) {
+    const size_t df = term->term->df;
+    const size_t limit = top->cap < df ? top->cap : df;
+    size_t seen = 0;
+    while (term->count) {
+        for (uint32_t row = 0; row < term->count; ++row) {
+            uint32_t doc = term->docs[row];
+            DalwHit hit = {doc, bm25_hit(s, doc, term->tf[row], term->idf, avg)};
+            keep_ranked(top->hits, seen + row, limit, df > limit, hit);
+        }
+        seen += term->count;
+        if (next_block(term, s->ndocs) < 0) return -1;
+    }
+    top->cap = limit;
+    top->seen = seen;
+    return 0;
+}
+
+static int score_all(const DalwShard *s, PostingCursor *c, size_t n, float avg, TopHits *top) {
+    PostingCursor *lead = c;
+    while (lead->count) {
+        for (uint32_t row = 0; row < lead->count; ++row) {
+            uint32_t doc = lead->docs[row];
+            float score = bm25_hit(s, doc, lead->tf[row], lead->idf, avg);
+            size_t i = 1;
+            for (; i < n; ++i) {
+                PostingCursor *term = &c[i];
+                while (term->count && term->docs[term->count - 1] < doc)
+                    if (next_block(term, s->ndocs) < 0) return -1;
+                if (!term->count) break;
+                while (term->docs[term->at] < doc) ++term->at;
+                if (term->docs[term->at] != doc) break;
+                score += bm25_hit(s, doc, term->tf[term->at], term->idf, avg);
+            }
+            if (i == n) keep_ranked(top->hits, top->seen++, top->cap, 1, (DalwHit){doc, score});
+        }
+        if (next_block(lead, s->ndocs) < 0) return -1;
+    }
+    /* Validate the tail even when the shortest list ends in an earlier block. */
+    for (size_t i = 1; i < n; ++i)
+        while (c[i].count) if (next_block(&c[i], s->ndocs) < 0) return -1;
+    return 0;
+}
+
+static int score_any(const DalwShard *s, PostingCursor *c, size_t n, float avg, TopHits *top) {
+    enum { WINDOW = 256 };
+    for (;;) {
+        uint32_t first = UINT32_MAX;
+        for (size_t i = 0; i < n; ++i)
+            if (c[i].count && c[i].docs[c[i].at] < first) first = c[i].docs[c[i].at];
+        if (first == UINT32_MAX) return 0;
+        uint32_t base = first - first % WINDOW;
+        float scores[WINDOW] = {0};
+        for (size_t i = 0; i < n; ++i) {
+            PostingCursor *term = &c[i];
+            while (term->count) {
+                uint32_t doc = term->docs[term->at];
+                if (doc - base >= WINDOW) break;
+                scores[doc - base] += bm25_hit(s, doc, term->tf[term->at], term->idf, avg);
+                if (++term->at == term->count && next_block(term, s->ndocs) < 0) return -1;
+            }
+        }
+        for (unsigned i = 0; i < WINDOW; ++i)
+            if (scores[i] > 0.0f)
+                keep_ranked(top->hits, top->seen++, top->cap, 1, (DalwHit){base + i, scores[i]});
+    }
+}
+
+size_t dalw_search_mode(const DalwShard *s, const uint64_t *hashes, size_t n, int any,
+                        DalwHit *out, size_t k, int *status) {
+    int st = 0;
+    size_t found = 0;
+    TopHits top = {.hits = out, .cap = k};
+    QTerm one_term, *terms = &one_term;
+    PostingCursor one_cursor, *c = &one_cursor;
+    if (!s || !s->base || !hashes || !n || !out || !k) goto done;
+    if (n > 1) terms = n <= SIZE_MAX / sizeof(*terms) ? malloc(n * sizeof(*terms)) : NULL;
+    if (!terms) { st = -1; goto done; }
+    st = resolve_terms(s, hashes, n, any, terms, &found);
+    if (st < 0 || !found) goto done;
+    if (found > 1) c = found <= SIZE_MAX / sizeof(*c) ? malloc(found * sizeof(*c)) : NULL;
+    if (!c) { st = -1; goto done; }
+    for (size_t i = 0; i < found; ++i) {
+        c[i].block = c[i].tf_offset = 0;
+        c[i].count = 0;
+        c[i].term = &terms[i];
+        c[i].idf = (float)log(1.0 + ((double)s->ndocs - terms[i].df + 0.5) / (terms[i].df + 0.5));
+        if (next_block(&c[i], s->ndocs) < 0) { st = -1; goto done; }
+    }
+    double mean = (double)s->total_tokens / s->ndocs;
+    float avg = mean < 1.0 ? 1.0f : (float)mean;
+    if (found == 1) st = score_single(s, c, avg, &top);
+    else if (any) st = score_any(s, c, found, avg, &top);
+    else st = score_all(s, c, found, avg, &top);
+    if (top.seen > top.cap) top.seen = top.cap;
+    if (st == 0 && top.cap > SMALL_TOP_K) qsort(out, top.seen, sizeof(*out), rank_hit);
+done:
+    if (c != &one_cursor) free(c);
+    if (terms != &one_term) free(terms);
+    if (status) *status = st;
+    return st < 0 ? 0 : top.seen;
+}
+
 size_t dalw_search(const DalwShard *s, const uint64_t *hashes, size_t n,
                    DalwHit *out, size_t k, int *status) {
-    size_t cnt = 0, m = 0; uint32_t *cand = NULL, *D = NULL, *T = NULL; float *sc = NULL;
-    QTerm *q = NULL; int st = 0;
-    if (status) *status = 0;
-    if (!s || !s->base || !hashes || !n || !out || !k) return 0;
-    q = n <= SIZE_MAX / sizeof *q ? (QTerm *)malloc(n * sizeof *q) : NULL;
-    if (!q) { st = -1; goto done; }
-    st = intersect_terms(s, hashes, n, q, &cand, &cnt);
-    if (st < 0 || cnt == 0) goto done;
-    const size_t length = (size_t)q[n - 1].df + DALW_SLACK;
-    T = malloc(length * sizeof(*T));
-    if (!T) { st = -1; goto done; }
-    if (n > 1) {
-        D = malloc(length * sizeof(*D));
-        sc = calloc(cnt, sizeof(*sc));
-        if (!D || !sc) { st = -1; goto done; }
-    }
-
-    double avgdl = (double)s->total_tokens / s->ndocs;
-    float avg = avgdl < 1.0 ? 1.0f : (float)avgdl;
-    float idf = 0.0f;
-    for (size_t t = 0; t < n; ++t) {
-        if (dalw_tf_decode(q[t].tp, q[t].tbytes, q[t].df, T) < 0) { st = -1; goto done; }
-        idf = (float)log(1.0 + ((double)s->ndocs - q[t].df + 0.5) / (q[t].df + 0.5));
-        if (n == 1) break; /* cand and T are already aligned. */
-        if (load_postings(s, &q[t], D) < 0) { st = -1; goto done; }
-        size_t p = 0;
-        for (size_t i = 0; i < cnt; ++i) {
-            while (p < q[t].df && D[p] < cand[i]) ++p;
-            if (p < q[t].df && D[p] == cand[i])
-                sc[i] += bm25_hit(s, cand[i], T[p], idf, avg);
-        }
-    }
-
-    m = cnt < k ? cnt : k;
-    enum { SMALL_TOP_K = 64 };
-    for (size_t i = 0; i < cnt; ++i) {
-        DalwHit hit = {.doc = cand[i], .score = sc ? sc[i] : bm25_hit(s, cand[i], T[i], idf, avg)};
-        if (m <= SMALL_TOP_K) {
-            keep_small(out, i < m ? i : m, m, hit);
-        } else if (i < m) {
-            out[i] = hit;
-            if (i + 1 == m && cnt > m)
-                for (size_t p = m / 2; p > 0; --p) sift_hit(out, m, p - 1);
-        } else if (rank_hit(&hit, &out[0]) < 0) {
-            out[0] = hit;
-            sift_hit(out, m, 0);
-        }
-    }
-    if (m > SMALL_TOP_K) qsort(out, m, sizeof(*out), rank_hit);
-done:
-    free(q); free(cand); free(D); free(T); free(sc);
-    if (status) *status = st;
-    return st < 0 ? 0 : m;
+    return dalw_search_mode(s, hashes, n, 0, out, k, status);
 }
 
 /* ================= receipts ================= */
@@ -814,14 +948,34 @@ static void hex_bytes(char *o, const uint8_t *p, size_t n) {
     o[2*n] = 0;
 }
 
-int dalw_receipt(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,
-                 char *out, size_t cap) {
+/* Find the last block starting at or before doc, then inspect at most 128 IDs. */
+static int term_contains(const DalwShard *s, uint64_t hash, uint32_t doc) {
+    QTerm t;
+    int found = find_term(s, hash, &t);
+    if (found <= 0) return found;
+    size_t lo = 0, hi = block_count(t.df);
+    if (t.dbytes < hi * 8) return -1;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (rd32(t.dp + mid * 8) <= doc) lo = mid + 1;
+        else hi = mid;
+    }
+    if (!lo) return 0;
+    size_t b = lo - 1;
+    uint32_t ids[POSTING_BLOCK], count = block_length(t.df, b);
+    if (decode_docs_block(t.dp, t.dbytes, t.df, b, ids) < 0 || ids[count - 1] >= s->ndocs) return -1;
+    for (uint32_t i = 0; i < count && ids[i] <= doc; ++i) if (ids[i] == doc) return 1;
+    return 0;
+}
+
+int dalw_receipt_mode(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,
+                      int any, char *out, size_t cap) {
     DalwDoc d; SB b = {out, cap, 0, 0}; char hx[65];
     if (out && cap) out[0] = 0;
     if (!s || !hit || (!hashes && n) || (out == NULL) != (cap == 0) ||
         dalw_doc(s, hit->doc, &d) != 0) return -1;
     hex_bytes(hx, s->sha256, 32);
-    sb_fmt(&b, "{\"v\":1,\"shard\":\"%s\",\"doc\":%u,\"fp\":\"%016llx\",\"url\":", hx, hit->doc, (unsigned long long)d.fp);
+    sb_fmt(&b, "{\"v\":%d,\"shard\":\"%s\",\"doc\":%u,\"fp\":\"%016llx\",\"url\":", any ? 2 : 1, hx, hit->doc, (unsigned long long)d.fp);
     sb_json(&b, d.url, d.url_len);
     sb_raw(&b, ",\"title\":", 9); sb_json(&b, d.title, d.title_len);
     sb_raw(&b, ",\"warc\":{\"file\":", 16); sb_json(&b, d.warc_file, d.warc_file_len);
@@ -830,6 +984,18 @@ int dalw_receipt(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes,
     sb_fmt(&b, ",\"ntok\":%u,\"score\":%.6f,\"terms\":[", d.ntok, (double)hit->score);
     for (size_t i = 0; i < n; i++) sb_fmt(&b, "%s\"%016llx\"", i ? "," : "", (unsigned long long)hashes[i]);
     sb_raw(&b, "]", 1);
+    if (any) {
+        const char fields[] = ",\"match\":\"any\",\"matched_terms\":[";
+        sb_raw(&b, fields, sizeof fields - 1);
+        size_t matched = 0;
+        for (size_t i = 0; i < n && !b.err; ++i) {
+            int contains = term_contains(s, hashes[i], hit->doc);
+            if (contains < 0) { b.err = 1; break; }
+            if (contains) sb_fmt(&b, "%s\"%016llx\"", matched++ ? "," : "", (unsigned long long)hashes[i]);
+        }
+        if (!matched) b.err = 1;
+        sb_raw(&b, "]", 1);
+    }
     char id[65] = {0};
     if (!b.err && out) {
         DalwSha256 h; uint8_t dg[32];
@@ -841,4 +1007,9 @@ int dalw_receipt(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes,
     sb_fmt(&b, ",\"id\":\"%s\"}", id);
     if (b.err && out) out[0] = 0;
     return b.err ? -1 : (int)b.n;
+}
+
+int dalw_receipt(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,
+                 char *out, size_t cap) {
+    return dalw_receipt_mode(s, hit, hashes, n, 0, out, cap);
 }

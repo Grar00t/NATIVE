@@ -50,4 +50,30 @@ printf 'local\traw_\355\240\200\tfile\t0\t3\tsha\tالبحث\n' > invalid-utf8
 "$cli" index unicode.dalw invalid-utf8
 "$cli" search unicode.dalw 1 البحث > unicode-result
 grep -Fq '"title":"raw_???"' unicode-result
+DALW_EXACT=0 "$cli" search a.dalw 1 البحث المحلي > stem
+cmp hit stem
+DALW_EXACT=1 "$cli" search a.dalw 1 البحث المحلي > exact
+if cmp -s stem exact; then echo 'expected distinct Arabic term hashes' >&2; exit 1; fi
+pin=$("$cli" verify a.dalw | sed 's/.*sha256=//')
+"$cli" verify a.dalw "$pin"
+"$cli" verify a.dalw "$(printf '%s' "$pin" | tr a-f A-F)"
+reject "$cli" verify empty.dalw "$pin"
+cp a.dalw damaged.dalw
+printf 'z' >> damaged.dalw
+reject "$cli" verify damaged.dalw "$pin"
+reject "$cli" verify a.dalw "$(printf '%064d' 0)"
+reject "$cli" verify a.dalw "${pin%?}z"
+reject "$cli" verify a.dalw "${pin%?}"
+"$cli" search a.dalw 5 البحث غائب > none
+test ! -s none
+"$cli" search-any a.dalw,a.dalw 5 البحث البحث غائب > partial
+test "$(wc -l <partial)" -eq 2
+grep -Eq '"match":"any","matched_terms":\["[0-9a-f]{16}"\]' partial
+while IFS= read -r receipt; do
+    prefix=$(printf '%s' "$receipt" | sed 's/,"id":"[0-9a-f]*"}$//')
+    hash=$(printf '%s' "$prefix" | sha256sum)
+    test "$receipt" = "$(printf '%s,"id":"%s"}' "$prefix" "${hash%% *}")"
+done < partial
+"$cli" search-any a.dalw 5 مفقود غائب > none
+test ! -s none
 echo 'DALW CLI passed'

@@ -26,7 +26,7 @@ internal static class NiyahDalwNative
     internal static extern void niyah_dalw_close(IntPtr handle);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int niyah_dalw_search_json(DalwHandle handle, byte[] query, int exact, nuint k,
+    internal static extern int niyah_dalw_search_json_mode(DalwHandle handle, byte[] query, int exact, int any, nuint k,
         [Out] byte[]? output, nuint cap, out int status);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
@@ -77,7 +77,9 @@ public sealed class NiyahDalwSearcher : IDisposable
     }
 
     /// <param name="exact">true disables Arabic stemming.</param>
-    public string SearchJson(string query, bool exact = false, int k = 10)
+    public string SearchJson(string query, bool exact = false, int k = 10) => SearchJson(query, exact, k, false);
+
+    public string SearchJson(string query, bool exact, int k, bool matchAny)
     {
         ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         ArgumentNullException.ThrowIfNull(query);
@@ -88,15 +90,15 @@ public sealed class NiyahDalwSearcher : IDisposable
         Encoding.UTF8.GetBytes(query, 0, query.Length, q, 0);
         var buf = new byte[16384];
 
-        int n = NiyahDalwNative.niyah_dalw_search_json(_handle, q, exact ? 1 : 0, (nuint)k,
+        int n = NiyahDalwNative.niyah_dalw_search_json_mode(_handle, q, exact ? 1 : 0, matchAny ? 1 : 0, (nuint)k,
             buf, (nuint)buf.Length, out int st);
         if (n < 0 && st == NiyahDalwNative.InsufficientMemory)
         {
-            n = NiyahDalwNative.niyah_dalw_search_json(_handle, q, exact ? 1 : 0,
+            n = NiyahDalwNative.niyah_dalw_search_json_mode(_handle, q, exact ? 1 : 0, matchAny ? 1 : 0,
                 (nuint)k, null, 0, out st);
             if (n < 0) throw Fail(st);
             buf = new byte[checked(n + 1)];
-            n = NiyahDalwNative.niyah_dalw_search_json(_handle, q, exact ? 1 : 0,
+            n = NiyahDalwNative.niyah_dalw_search_json_mode(_handle, q, exact ? 1 : 0, matchAny ? 1 : 0,
                 (nuint)k, buf, (nuint)buf.Length, out st);
         }
         if (n < 0) throw Fail(st);

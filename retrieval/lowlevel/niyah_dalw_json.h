@@ -16,6 +16,9 @@ extern "C" {
    *status (may be NULL) receives a NiyahDalwStatus. k is capped at 1000. */
 int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact,
                            size_t k, char *out, size_t cap, int *status);
+/* any != 0 matches one or more query terms. */
+int niyah_dalw_search_json_mode(const NiyahDalw *handle, const char *query, int exact, int any,
+                           size_t k, char *out, size_t cap, int *status);
 
 #ifdef __cplusplus
 }

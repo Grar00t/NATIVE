@@ -107,7 +107,7 @@ static uint64_t document_id_for(const DalwShard *shard, uint32_t shard_index, ui
     return ((uint64_t)shard_index << 32) | (uint64_t)doc;
 }
 
-size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
+size_t niyah_dalw_query_mode(const NiyahDalw *handle, const char *query, int exact, int any,
                         NiyahDalwHit *hits, size_t cap, int *status)
 {
     uint64_t terms[NIYAH_DALW_MAX_QUERY_TERMS];
@@ -151,7 +151,7 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
         int st = 0;
         size_t m, per_shard = handle->shards[i].ndocs;
         if (per_shard > cap) per_shard = cap;
-        m = dalw_search(&handle->shards[i], terms, nterms, tmp, per_shard, &st);
+        m = dalw_search_mode(&handle->shards[i], terms, nterms, any, tmp, per_shard, &st);
         if (st < 0) {
             free(best);
             free(tmp);
@@ -189,8 +189,14 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
     return total;
 }
 
-int niyah_dalw_receipt(const NiyahDalw *handle, const NiyahDalwHit *hit,
-                       const char *query, int exact, char *out, size_t cap)
+size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
+                        NiyahDalwHit *hits, size_t cap, int *status)
+{
+    return niyah_dalw_query_mode(handle, query, exact, 0, hits, cap, status);
+}
+
+int niyah_dalw_receipt_mode(const NiyahDalw *handle, const NiyahDalwHit *hit,
+                            const char *query, int exact, int any, char *out, size_t cap)
 {
     uint64_t terms[NIYAH_DALW_MAX_QUERY_TERMS];
     size_t nterms;
@@ -205,7 +211,13 @@ int niyah_dalw_receipt(const NiyahDalw *handle, const NiyahDalwHit *hit,
     memset(&dh, 0, sizeof dh);
     dh.doc = hit->doc;
     dh.score = hit->score;
-    return dalw_receipt(&handle->shards[hit->shard], &dh, terms, nterms, out, cap);
+    return dalw_receipt_mode(&handle->shards[hit->shard], &dh, terms, nterms, any, out, cap);
+}
+
+int niyah_dalw_receipt(const NiyahDalw *handle, const NiyahDalwHit *hit,
+                       const char *query, int exact, char *out, size_t cap)
+{
+    return niyah_dalw_receipt_mode(handle, hit, query, exact, 0, out, cap);
 }
 
 size_t niyah_dalw_to_search_hits(const NiyahDalwHit *in, size_t n,

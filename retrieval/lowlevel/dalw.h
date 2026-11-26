@@ -84,10 +84,16 @@ size_t dalw_query(const DalwShard *s, const uint64_t *hashes, size_t n,
 typedef struct { uint32_t doc; float score; } DalwHit;
 size_t dalw_search(const DalwShard *s, const uint64_t *hashes, size_t n,
                    DalwHit *out, size_t k, int *status);
+/* any != 0 matches one or more query terms. */
+size_t dalw_search_mode(const DalwShard *s, const uint64_t *hashes, size_t n, int any,
+                   DalwHit *out, size_t k, int *status);
 
 /* One-line JSON receipt. id = SHA-256 of everything before ,"id":. With out=NULL and cap=0, measures the required bytes (excluding NUL). Returns length, or -1. */
 int dalw_receipt(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,
                  char *out, size_t cap);
+/* any != 0 matches one or more query terms. */
+int dalw_receipt_mode(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,
+                 int any, char *out, size_t cap);
 
 #ifdef __cplusplus
 }

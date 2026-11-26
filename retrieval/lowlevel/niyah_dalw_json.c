@@ -65,7 +65,7 @@ static void set_status(int *status, int value)
     if (status) *status = value;
 }
 
-int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact,
+int niyah_dalw_search_json_mode(const NiyahDalw *handle, const char *query, int exact, int any,
                            size_t k, char *out, size_t cap, int *status)
 {
     NiyahDalwHit *hits;
@@ -86,7 +86,7 @@ int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact
         set_status(status, NIYAH_DALW_E_MEM);
         return -1;
     }
-    n = niyah_dalw_query(handle, query, exact, hits, k, &st);
+    n = niyah_dalw_query_mode(handle, query, exact, any, hits, k, &st);
     if (st != NIYAH_DALW_OK) {
         free(hits);
         set_status(status, st);
@@ -99,6 +99,7 @@ int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact
     b.bad = 0;
     put_str(&b, "{\"query\":");
     put_quoted(&b, query);
+    if (any) put_str(&b, ",\"match\":\"any\"");
     (void)snprintf(tmp, sizeof tmp, ",\"exact\":%s,\"count\":%lu,\"hits\":[",
                    exact ? "true" : "false", (unsigned long)n);
     put_str(&b, tmp);
@@ -112,10 +113,10 @@ int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact
                        (unsigned long)hits[i].shard, (unsigned long)hits[i].doc);
         put_str(&b, tmp);
         if (b.bad) break;
-        rl = niyah_dalw_receipt(handle, &hits[i], query, exact,
+        rl = niyah_dalw_receipt_mode(handle, &hits[i], query, exact, any,
                                 out ? out + b.len : NULL, out ? cap - b.len : 0u);
         if (rl < 0) {
-            st = out && niyah_dalw_receipt(handle, &hits[i], query, exact, NULL, 0u) >= 0
+            st = out && niyah_dalw_receipt_mode(handle, &hits[i], query, exact, any, NULL, 0u) >= 0
                      ? NIYAH_DALW_E_MEM : NIYAH_DALW_E_CORRUPT;
             break;
         }
@@ -134,4 +135,10 @@ int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact
         return -1;
     }
     return (int)b.len;
+}
+
+int niyah_dalw_search_json(const NiyahDalw *handle, const char *query, int exact,
+                           size_t k, char *out, size_t cap, int *status)
+{
+    return niyah_dalw_search_json_mode(handle, query, exact, 0, k, out, cap, status);
 }

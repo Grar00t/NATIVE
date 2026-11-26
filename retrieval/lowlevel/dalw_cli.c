@@ -113,7 +113,7 @@ static char *join_words(int count, char **words)
     return query;
 }
 
-static int cmd_search(char *paths_csv, size_t k, const char *query)
+static int cmd_search(char *paths_csv, size_t k, const char *query, int any)
 {
     const char *paths[NIYAH_DALW_MAX_SHARDS];
     size_t count = 0;
@@ -130,7 +130,8 @@ static int cmd_search(char *paths_csv, size_t k, const char *query)
     }
 
     int status = 0, rc = 1;
-    const int exact = getenv("DALW_EXACT") != NULL;
+    const char *setting = getenv("DALW_EXACT");
+    const int exact = setting && strcmp(setting, "0") != 0;
     NiyahDalw *index = niyah_dalw_open(paths, count, getenv("DALW_VERIFY") != NULL, &status);
     if (!index) { fprintf(stderr, "%s\n", niyah_dalw_strerror(status)); return 1; }
     size_t docs = niyah_dalw_doc_count(index);
@@ -141,14 +142,14 @@ static int cmd_search(char *paths_csv, size_t k, const char *query)
     size_t capacity = 0;
     if (!hits) { fputs("cannot allocate search results\n", stderr); goto done; }
     const double start = now_ms();
-    size_t found = niyah_dalw_query(index, query, exact, hits, limit, &status);
+    size_t found = niyah_dalw_query_mode(index, query, exact, any, hits, limit, &status);
     if (status != NIYAH_DALW_OK) {
         fprintf(stderr, "%s\n", niyah_dalw_strerror(status));
         if (status == NIYAH_DALW_E_CORRUPT) rc = 2;
         goto done;
     }
     for (size_t i = 0; i < found; ++i) {
-        int n = niyah_dalw_receipt(index, &hits[i], query, exact, NULL, 0);
+        int n = niyah_dalw_receipt_mode(index, &hits[i], query, exact, any, NULL, 0);
         if (n < 0) { fputs("invalid document metadata\n", stderr); goto done; }
         if ((size_t)n >= capacity) {
             char *next = realloc(receipt, (size_t)n + 1);
@@ -156,7 +157,7 @@ static int cmd_search(char *paths_csv, size_t k, const char *query)
             receipt = next;
             capacity = (size_t)n + 1;
         }
-        if (niyah_dalw_receipt(index, &hits[i], query, exact, receipt, capacity) != n) {
+        if (niyah_dalw_receipt_mode(index, &hits[i], query, exact, any, receipt, capacity) != n) {
             fputs("cannot format search result\n", stderr); goto done;
         }
         if (puts(receipt) == EOF) { perror("stdout"); goto done; }
@@ -171,9 +172,31 @@ done:
     return rc;
 }
 
-static int cmd_info(const char *path, int verify) {
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int cmd_info(const char *path, int verify, const char *pin) {
+    uint8_t expected[32];
+    if (pin) {
+        if (strlen(pin) != 64) { fputs("expected 64 hexadecimal digits\n", stderr); return 1; }
+        for (size_t i = 0; i < sizeof expected; ++i) {
+            int hi = hex_digit(pin[2 * i]), lo = hex_digit(pin[2 * i + 1]);
+            if (hi < 0 || lo < 0) { fputs("invalid SHA-256 digit\n", stderr); return 1; }
+            expected[i] = (uint8_t)(16 * hi + lo);
+        }
+    }
     DalwShard s; int r = dalw_open(&s, path, verify);
     if (r) { fprintf(stderr, "open failed (%d)%s\n", r, r == -2 ? " : SHA-256 MISMATCH" : ""); return 1; }
+    if (pin && memcmp(s.sha256, expected, sizeof expected) != 0) {
+        fputs("shard differs from the expected digest\n", stderr);
+        dalw_close(&s);
+        return 1;
+    }
     printf("docs=%u terms=%u tokens=%llu bytes=%zu verified=%d sha256=", s.ndocs, s.nterms,
            (unsigned long long)s.total_tokens, s.size, s.signed_flag);
     for (int i = 0; i < 32; i++) printf("%02x", s.sha256[i]);
@@ -186,7 +209,7 @@ int main(int argc, char **argv)
         if (argc == 4) return cmd_index(argv[2], argv[3], 0);
         if (argc == 5 && !strcmp(argv[4], "--skip-invalid")) return cmd_index(argv[2], argv[3], 1);
     }
-    if (argc >= 5 && !strcmp(argv[1], "search")) {
+    if (argc >= 5 && (!strcmp(argv[1], "search") || !strcmp(argv[1], "search-any"))) {
         uint64_t k;
         if (!decimal(argv[3], SIZE_MAX, &k) || k == 0) {
             fputs("K must be a positive decimal integer\n", stderr);
@@ -194,14 +217,15 @@ int main(int argc, char **argv)
         }
         char *query = join_words(argc - 4, argv + 4);
         if (!query) { fputs("cannot allocate query\n", stderr); return 1; }
-        int rc = cmd_search(argv[2], (size_t)k, query);
+        int rc = cmd_search(argv[2], (size_t)k, query, !strcmp(argv[1], "search-any"));
         free(query);
         return rc;
     }
-    if (argc == 3 && !strcmp(argv[1], "info")) return cmd_info(argv[2], 0);
-    if (argc == 3 && !strcmp(argv[1], "verify")) return cmd_info(argv[2], 1);
+    if (argc == 3 && !strcmp(argv[1], "info")) return cmd_info(argv[2], 0, NULL);
+    if ((argc == 3 || argc == 4) && !strcmp(argv[1], "verify"))
+        return cmd_info(argv[2], 1, argc == 4 ? argv[3] : NULL);
     fputs("usage:\n  dalw-cli index OUT.dalw IN.tsv [--skip-invalid]\n"
-          "  dalw-cli search A.dalw[,B.dalw] K words...\n  dalw-cli info|verify SHARD\n"
+          "  dalw-cli search|search-any A.dalw[,B.dalw] K words...\n  dalw-cli info SHARD\n  dalw-cli verify SHARD [EXPECTED_BODY_SHA256]\n"
           "env: DALW_EXACT=1 DALW_VERIFY=1 DALW_ISECT=scalar|avx2|avx512\n", stderr);
     return 1;
 }

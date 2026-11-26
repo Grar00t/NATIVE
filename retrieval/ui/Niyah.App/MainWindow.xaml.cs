@@ -24,6 +24,8 @@ public partial class MainWindow : Window
         Query.TextChanged += (_, _) => CriteriaChanged();
         Exact.Checked += (_, _) => CriteriaChanged();
         Exact.Unchecked += (_, _) => CriteriaChanged();
+        MatchAny.Checked += (_, _) => CriteriaChanged();
+        MatchAny.Unchecked += (_, _) => CriteriaChanged();
         Loaded += async (_, _) =>
         {
             var paths = Environment.GetEnvironmentVariable("NIYAH_DALW_SHARDS");
@@ -54,6 +56,7 @@ public partial class MainWindow : Window
     {
         if (_busy || paths.Length == 0) return;
         SetBusy(true);
+        Status.Text = Message("Opening", paths.Length);
         try
         {
             var next = await Task.Run(() => new NiyahDalwSearcher(paths));
@@ -80,11 +83,13 @@ public partial class MainWindow : Window
         var index = _index;
         if (_busy || index is null || query.Length == 0) return;
         bool exact = Exact.IsChecked == true;
+        bool any = MatchAny.IsChecked == true;
         SetBusy(true);
+        Status.Text = Message("Searching");
         Results.ItemsSource = null;
         try
         {
-            string json = await Task.Run(() => index.SearchJson(query, exact, 50));
+            string json = await Task.Run(() => index.SearchJson(query, exact, 50, any));
             using var doc = JsonDocument.Parse(json);
             var rows = new List<Hit>();
             foreach (var hit in doc.RootElement.GetProperty("hits").EnumerateArray())
@@ -114,6 +119,7 @@ public partial class MainWindow : Window
         OpenButton.IsEnabled = !busy;
         Query.IsEnabled = !busy;
         Exact.IsEnabled = !busy;
+        MatchAny.IsEnabled = !busy;
         SearchButton.IsEnabled = !busy && _index != null && !string.IsNullOrWhiteSpace(Query.Text);
         if (!busy && _closed) { _index?.Dispose(); _index = null; }
     }
