@@ -20,6 +20,7 @@ hadeed:
 	$(MAKE) -C hadeed
 
 check-host: all
+	sh tests/stream-progress.sh build/think
 	sh tests/check-engine.sh "$(ENGINE_DIR)" model/build
 	$(MAKE) -C lang test
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Iengine/include -static -o build/tensor-oracle tests/tensor_oracle.c $(ENGINE_DIR)/libniyah.a -lm
@@ -81,9 +82,15 @@ clean-components:
 
 .PHONY: bench-search
 SEARCH_SOURCES = retrieval/search/niyah_index.c retrieval/lowlevel/dalw.c retrieval/lowlevel/sha256.c retrieval/lowlevel/intersect.c
-build/search-bench: tests/search_bench.c $(SEARCH_SOURCES) retrieval/search/niyah_index.h retrieval/lowlevel/dalw.h retrieval/native/niyah_utf8.h
+build/search-bench: tests/search_bench.c $(SEARCH_SOURCES) retrieval/search/niyah_index.h retrieval/lowlevel/dalw.h retrieval/lowlevel/dalw_analysis.h retrieval/native/niyah_utf8.h
 	mkdir -p build
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Iretrieval/search -Iretrieval/lowlevel -o $@ tests/search_bench.c $(SEARCH_SOURCES) -lm
 
 bench-search: build/search-bench
 	./build/search-bench
+
+build/think: tools/think.c
+	mkdir -p $(@D)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror $< -o $@
+
+check-host: build/think
