@@ -98,16 +98,6 @@ size_t niyah_dalw_doc_count(const NiyahDalw *handle)
     return total;
 }
 
-static int hit_cmp(const void *pa, const void *pb)
-{
-    const NiyahDalwHit *a = (const NiyahDalwHit *)pa;
-    const NiyahDalwHit *b = (const NiyahDalwHit *)pb;
-    if (a->score != b->score) return a->score < b->score ? 1 : -1;
-    if (a->shard != b->shard) return a->shard < b->shard ? -1 : 1;
-    if (a->doc != b->doc) return a->doc < b->doc ? -1 : 1;
-    return 0;
-}
-
 static uint64_t document_id_for(const DalwShard *shard, uint32_t shard_index, uint32_t doc)
 {
     DalwDoc d;
@@ -122,7 +112,7 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
 {
     uint64_t terms[NIYAH_DALW_MAX_QUERY_TERMS];
     size_t nterms, i, total = 0u, slots = 0u, largest = 0u;
-    NiyahDalwHit *all = NULL;
+    NiyahDalwHit *best = NULL;
     DalwHit *tmp = NULL;
 
     set_status(status, NIYAH_DALW_OK);
@@ -140,18 +130,18 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
     for (i = 0u; i < handle->count; ++i) {
         size_t count = handle->shards[i].ndocs;
         if (count > cap) count = cap;
-        if (count > SIZE_MAX / sizeof *all - slots) {
-            set_status(status, NIYAH_DALW_E_MEM);
-            return 0u;
-        }
-        slots += count;
+        slots += count < cap - slots ? count : cap - slots;
         if (count > largest) largest = count;
     }
     if (slots == 0u) return 0u;
-    all = (NiyahDalwHit *)malloc(slots * sizeof *all);
+    if (slots > SIZE_MAX / sizeof *best || largest > SIZE_MAX / sizeof *tmp) {
+        set_status(status, NIYAH_DALW_E_MEM);
+        return 0u;
+    }
+    best = (NiyahDalwHit *)malloc(slots * sizeof *best);
     tmp = (DalwHit *)malloc(largest * sizeof *tmp);
-    if (!all || !tmp) {
-        free(all);
+    if (!best || !tmp) {
+        free(best);
         free(tmp);
         set_status(status, NIYAH_DALW_E_MEM);
         return 0u;
@@ -159,28 +149,42 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
 
     for (i = 0u; i < handle->count; i++) {
         int st = 0;
-        size_t m, j, per_shard = handle->shards[i].ndocs;
+        size_t m, per_shard = handle->shards[i].ndocs;
         if (per_shard > cap) per_shard = cap;
         m = dalw_search(&handle->shards[i], terms, nterms, tmp, per_shard, &st);
         if (st < 0) {
-            free(all);
+            free(best);
             free(tmp);
             set_status(status, NIYAH_DALW_E_CORRUPT);
             return 0u;
         }
-        for (j = 0u; j < m && j < per_shard; j++) {
-            NiyahDalwHit *out = &all[total++];
-            out->shard = (uint32_t)i;
-            out->doc = tmp[j].doc;
-            out->score = tmp[j].score;
-            out->document_id = document_id_for(&handle->shards[i], out->shard, out->doc);
+        if (!m) continue;
+        /* Earlier shards win score ties. Select both prefixes, then merge backwards. */
+        size_t old = 0, fresh = 0;
+        while (old + fresh < slots && old < total && fresh < m) {
+            if (best[old].score >= tmp[fresh].score) ++old;
+            else ++fresh;
+        }
+        size_t room = slots - old - fresh;
+        if (old == total) fresh += m - fresh < room ? m - fresh : room;
+        else if (fresh == m) old += total - old < room ? total - old : room;
+        total = old + fresh;
+        while (fresh) {
+            size_t dest = old + fresh - 1;
+            if (old && best[old - 1].score < tmp[fresh - 1].score) {
+                best[dest] = best[--old];
+            } else {
+                const DalwHit hit = tmp[--fresh];
+                best[dest] = (NiyahDalwHit){.shard = (uint32_t)i, .doc = hit.doc, .score = hit.score};
+            }
         }
     }
 
-    qsort(all, total, sizeof *all, hit_cmp);
-    if (total > cap) total = cap;
-    memcpy(hits, all, total * sizeof *all);
-    free(all);
+    for (i = 0; i < total; ++i) {
+        hits[i] = best[i];
+        hits[i].document_id = document_id_for(&handle->shards[best[i].shard], best[i].shard, best[i].doc);
+    }
+    free(best);
     free(tmp);
     return total;
 }

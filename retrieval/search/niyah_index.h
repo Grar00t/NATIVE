@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     uint64_t document_id;
     uint32_t term_frequency;
+    uint32_t ordinal;
 } NiyahPosting;
 
 typedef struct {
@@ -32,6 +33,12 @@ typedef struct {
     size_t posting_capacity;
     uint32_t document_frequency;
 } NiyahTermEntry;
+
+struct NiyahLookupGroup;
+typedef struct {
+    struct NiyahLookupGroup *groups;
+    size_t group_count;
+} NiyahLookup;
 
 typedef struct {
     NiyahTermEntry *terms;
@@ -43,6 +50,8 @@ typedef struct {
     double average_document_length;
     double k1;
     double b;
+    NiyahLookup terms_by_text;
+    NiyahLookup documents_by_id;
 } NiyahInvertedIndex;
 
 typedef struct {

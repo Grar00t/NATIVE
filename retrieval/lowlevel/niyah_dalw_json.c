@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "niyah_dalw_json.h"
+#include "../native/niyah_utf8.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -39,8 +40,10 @@ static void put_quoted(Buf *b, const char *s)
 {
     char t[8];
     put(b, "\"", 1u);
-    for (; *s; s++) {
-        unsigned char c = (unsigned char)*s;
+    size_t n = strlen(s);
+    for (size_t i = 0; i < n;) {
+        size_t start = i;
+        uint32_t c = niyah_utf8_next((const unsigned char *)s, n, &i);
         if (c == '"' || c == '\\') {
             t[0] = '\\';
             t[1] = (char)c;
@@ -48,8 +51,10 @@ static void put_quoted(Buf *b, const char *s)
         } else if (c < 0x20u) {
             (void)snprintf(t, sizeof t, "\\u%04x", (unsigned)c);
             put(b, t, 6u);
+        } else if (c == 0xFFFD && i - start == 1) {
+            put(b, "?", 1u);
         } else {
-            put(b, s, 1u);
+            put(b, s + start, i - start);
         }
     }
     put(b, "\"", 1u);

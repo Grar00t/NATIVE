@@ -1,4 +1,9 @@
 build/
+/build-*/
+/build.log
+/ctest.log
+/gmon.out
+/massif.out.*
 lang/niyahlex
 lang/niyahparse
 lang/niyahrun

@@ -1,6 +1,6 @@
 #include "niyah_index.h"
+#include "../native/niyah_utf8.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,42 +15,117 @@ static int term_compare(const void *a, const void *b) {
     return 0;
 }
 
-static bool token_byte(unsigned char c) {
-    return isalnum(c) != 0 || c >= 0x80u || c == '_' || c == '-';
+static bool term_character(uint32_t c) {
+    if (c < 0x80)
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+               (c >= '0' && c <= '9') || c == '_' || c == '-';
+    return c > 0xA0 && c != 0x060C && c != 0x061B && c != 0x061C && c != 0x061F &&
+           c != 0x06D4 && !(c >= 0x2000 && c <= 0x206F) && c != 0x3000 &&
+           c != 0xFEFF && c != 0xFFFD;
 }
 
 static size_t tokenize(const char *text, char tokens[][NIYAH_TERM_MAX], size_t max_tokens) {
     if (!text || max_tokens == 0) return 0;
-    size_t count = 0;
+    size_t count = 0, pos = 0, used = 0;
     const unsigned char *p = (const unsigned char *)text;
-    while (*p && count < max_tokens) {
-        while (*p && !token_byte(*p)) ++p;
-        if (!*p) break;
-
-        size_t len = 0;
-        while (*p && token_byte(*p)) {
-            if (len + 1u < NIYAH_TERM_MAX) {
-                unsigned char c = *p;
-                tokens[count][len++] = (char)(c < 0x80u ? tolower(c) : c);
+    const size_t length = strlen(text);
+    bool clipped = false;
+    while (pos < length && count < max_tokens) {
+        size_t start = pos;
+        uint32_t c = niyah_utf8_next(p, length, &pos);
+        if (!term_character(c)) {
+            if (used) {
+                tokens[count++][used] = '\0';
+                used = 0;
             }
-            ++p;
+            clipped = false;
+            continue;
         }
-        tokens[count][len] = '\0';
-        if (len > 0) ++count;
+        size_t bytes = pos - start;
+        if (used + bytes >= NIYAH_TERM_MAX) clipped = true;
+        if (clipped) continue;
+        if (bytes == 1) {
+            tokens[count][used++] = (char)(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
+        } else {
+            memcpy(tokens[count] + used, p + start, bytes);
+            used += bytes;
+        }
     }
+    if (used) tokens[count++][used] = '\0';
     return count;
 }
 
-static NiyahTermEntry *find_term(NiyahInvertedIndex *index, const char *term) {
-    for (size_t i = 0; i < index->term_count; ++i)
-        if (strcmp(index->terms[i].term, term) == 0) return &index->terms[i];
-    return NULL;
+enum { GROUP_WIDTH = 16 };
+struct NiyahLookupGroup {
+    uint8_t tags[GROUP_WIDTH];
+    size_t rows[GROUP_WIDTH];
+};
+
+static uint64_t mix_id(uint64_t x) {
+    x ^= x >> 30;
+    x *= UINT64_C(0xbf58476d1ce4e5b9);
+    x ^= x >> 27;
+    x *= UINT64_C(0x94d049bb133111eb);
+    return x ^ (x >> 31);
 }
 
-static const NiyahTermEntry *find_term_const(const NiyahInvertedIndex *index, const char *term) {
-    for (size_t i = 0; i < index->term_count; ++i)
-        if (strcmp(index->terms[i].term, term) == 0) return &index->terms[i];
-    return NULL;
+static uint64_t term_hash(const char *text) {
+    uint64_t h = UINT64_C(14695981039346656037);
+    while (*text) h = (h ^ (unsigned char)*text++) * UINT64_C(1099511628211);
+    return mix_id(h);
+}
+
+/* Slots are filled left to right. With no deletions, an empty slot ends a probe. */
+static size_t lookup_row(const NiyahInvertedIndex *index, const NiyahLookup *map,
+                         uint64_t hash, const char *word, uint64_t id) {
+    if (!map->group_count) return SIZE_MAX;
+    const uint8_t tag = (uint8_t)(1u + (hash & 127u));
+    size_t g = (size_t)(hash >> 7) & (map->group_count - 1u);
+    for (;;) {
+        const struct NiyahLookupGroup *group = &map->groups[g];
+        for (size_t i = 0; i < GROUP_WIDTH; ++i) {
+            if (!group->tags[i]) return SIZE_MAX;
+            if (group->tags[i] != tag) continue;
+            size_t row = group->rows[i];
+            if (word ? strcmp(index->terms[row].term, word) == 0
+                     : index->documents[row].document_id == id) return row;
+        }
+        g = (g + 1u) & (map->group_count - 1u);
+    }
+}
+
+static void insert_row(NiyahLookup *map, uint64_t hash, size_t row) {
+    size_t g = (size_t)(hash >> 7) & (map->group_count - 1u);
+    for (;;) {
+        struct NiyahLookupGroup *group = &map->groups[g];
+        for (size_t i = 0; i < GROUP_WIDTH; ++i) {
+            if (group->tags[i]) continue;
+            group->tags[i] = (uint8_t)(1u + (hash & 127u));
+            group->rows[i] = row;
+            return;
+        }
+        g = (g + 1u) & (map->group_count - 1u);
+    }
+}
+
+static bool reserve_rows(const NiyahInvertedIndex *index, NiyahLookup *map,
+                         size_t committed, size_t needed, bool terms) {
+    const size_t per_group = GROUP_WIDTH * 3u / 4u;
+    size_t groups = map->group_count;
+    if (needed <= groups * per_group) return true;
+    if (!groups) groups = 1;
+    while (needed > groups * per_group) {
+        if (groups > SIZE_MAX / sizeof(*map->groups) / 2u) return false;
+        groups *= 2u;
+    }
+    NiyahLookup fresh = {calloc(groups, sizeof(*map->groups)), groups};
+    if (!fresh.groups) return false;
+    for (size_t i = 0; i < committed; ++i)
+        insert_row(&fresh, terms ? term_hash(index->terms[i].term)
+                                 : mix_id(index->documents[i].document_id), i);
+    free(map->groups);
+    *map = fresh;
+    return true;
 }
 
 static bool grow_terms(NiyahInvertedIndex *index) {
@@ -97,6 +172,8 @@ void niyah_index_free(NiyahInvertedIndex *index) {
         free(index->terms[i].postings);
     free(index->terms);
     free(index->documents);
+    free(index->terms_by_text.groups);
+    free(index->documents_by_id.groups);
     memset(index, 0, sizeof(*index));
 }
 
@@ -121,29 +198,38 @@ bool niyah_index_add_document(NiyahInvertedIndex *index, const NiyahDocument *do
     for (size_t first = 0; first < n;) {
         size_t end = first + 1;
         while (end < n && strcmp(tokens[first], tokens[end]) == 0) ++end;
-        NiyahTermEntry *entry = find_term(index, tokens[first]);
-        if (!entry) {
+        size_t row = lookup_row(index, &index->terms_by_text, term_hash(tokens[first]), tokens[first], 0);
+        if (row == SIZE_MAX) {
             if (index->term_count == index->term_capacity && !grow_terms(index)) goto rollback;
-            entry = &index->terms[index->term_count++];
-            strcpy(entry->term, tokens[first]);
+            row = index->term_count++;
+            strcpy(index->terms[row].term, tokens[first]);
         }
+        NiyahTermEntry *entry = &index->terms[row];
         if (entry->document_frequency == UINT32_MAX ||
             (entry->posting_count == entry->posting_capacity && !grow_postings(entry))) goto rollback;
-        pending[used].term = (size_t)(entry - index->terms);
+        pending[used].term = row;
         pending[used++].frequency = (uint32_t)(end - first);
         first = end;
     }
 
-    /* All storage is ready. A failed insertion must be retryable with the same ID. */
+    if (!reserve_rows(index, &index->terms_by_text, original_terms, index->term_count, true) ||
+        !reserve_rows(index, &index->documents_by_id, index->document_count,
+                      index->document_count + 1u, false)) goto rollback;
+
+    /* No allocations follow publication. Rehashes contain only committed rows. */
+    for (size_t i = original_terms; i < index->term_count; ++i)
+        insert_row(&index->terms_by_text, term_hash(index->terms[i].term), i);
+    uint32_t ordinal = index->document_count < UINT32_MAX ? (uint32_t)index->document_count : UINT32_MAX;
     for (size_t i = 0; i < used; ++i) {
         NiyahTermEntry *entry = &index->terms[pending[i].term];
         entry->postings[entry->posting_count++] =
-            (NiyahPosting){document->document_id, pending[i].frequency};
+            (NiyahPosting){document->document_id, pending[i].frequency, ordinal};
         ++entry->document_frequency;
     }
     NiyahDocument *dst = &index->documents[index->document_count];
     *dst = *document;
     dst->term_count = (uint32_t)n;
+    insert_row(&index->documents_by_id, mix_id(dst->document_id), index->document_count);
     ++index->document_count;
     index->average_document_length +=
         ((double)n - index->average_document_length) / (double)index->document_count;
@@ -156,19 +242,6 @@ rollback:
         memset(entry, 0, sizeof(*entry));
     }
     return false;
-}
-
-static double bm25_score(const NiyahInvertedIndex *index,
-                         const NiyahTermEntry *entry,
-                         uint32_t tf,
-                         uint32_t doc_len) {
-    if (!index || !entry || tf == 0 || doc_len == 0 || index->document_count == 0) return 0.0;
-    double n = (double)index->document_count;
-    double df = (double)entry->document_frequency;
-    double idf = log(1.0 + (n - df + 0.5) / (df + 0.5));
-    double avg = index->average_document_length > 0.0 ? index->average_document_length : 1.0;
-    double norm = index->k1 * (1.0 - index->b + index->b * ((double)doc_len / avg));
-    return idf * (((double)tf * (index->k1 + 1.0)) / ((double)tf + norm));
 }
 
 /* The least desirable hit is at the root, including ID as the tie-breaker. */
@@ -184,52 +257,89 @@ static void sift_down(NiyahSearchHit *heap, size_t count, size_t parent) {
     }
 }
 
-size_t niyah_index_search(const NiyahInvertedIndex *index,
-                          const char *query,
-                          NiyahSearchHit *hits,
-                          size_t hit_capacity) {
-    if (!index || !query || !hits || hit_capacity == 0 || index->document_count == 0) return 0;
+/* Each posting list follows insertion order even when external IDs are sparse. */
+static size_t posting_row(const NiyahInvertedIndex *index, const NiyahPosting *posting) {
+    if (posting->ordinal != UINT32_MAX) return posting->ordinal;
+    return lookup_row(index, &index->documents_by_id, mix_id(posting->document_id), NULL,
+                      posting->document_id);
+}
 
-    double *scores = calloc(index->document_count, sizeof(*scores));
-    if (!scores) return 0;
-
-    char qtokens[128][NIYAH_TERM_MAX];
-    size_t qn = tokenize(query, qtokens, 128);
-    for (size_t qi = 0; qi < qn; ++qi) {
-        const NiyahTermEntry *entry = find_term_const(index, qtokens[qi]);
-        if (!entry) continue;
-        for (size_t pi = 0; pi < entry->posting_count; ++pi) {
-            const NiyahPosting *posting = &entry->postings[pi];
-            const NiyahDocument *doc = niyah_index_document(index, posting->document_id);
-            if (!doc) continue;
-            size_t index_pos = (size_t)(doc - index->documents);
-            scores[index_pos] += bm25_score(index, entry, posting->term_frequency, doc->term_count);
-        }
+static void retain_hit(NiyahSearchHit *hits, size_t cap, size_t *count, NiyahSearchHit next) {
+    if (*count < cap) {
+        hits[(*count)++] = next;
+        if (*count == cap)
+            for (size_t p = cap / 2; p > 0; --p) sift_down(hits, cap, p - 1);
+    } else if (term_compare(&next, &hits[0]) < 0) {
+        hits[0] = next;
+        sift_down(hits, cap, 0);
     }
+}
 
-    size_t count = 0;
-    for (size_t i = 0; i < index->document_count; ++i) {
-        if (scores[i] <= 0.0) continue;
-        NiyahSearchHit next = {index->documents[i].document_id, scores[i]};
-        if (count < hit_capacity) {
-            hits[count++] = next;
-            if (count == hit_capacity) {
-                for (size_t p = count / 2; p > 0; --p) sift_down(hits, count, p - 1);
+size_t niyah_index_search(const NiyahInvertedIndex *index, const char *query,
+                          NiyahSearchHit *hits, size_t hit_capacity) {
+    enum { QUERY_LIMIT = 128, WINDOW = 256 };
+    struct Cursor { const NiyahTermEntry *entry; size_t pos; double idf; };
+    if (!index || !query || !hits || !hit_capacity || !index->document_count) return 0;
+
+    char words[QUERY_LIMIT][NIYAH_TERM_MAX];
+    struct Cursor cursors[QUERY_LIMIT];
+    size_t used = 0, first = SIZE_MAX, count = 0;
+    const size_t n = tokenize(query, words, QUERY_LIMIT);
+    for (size_t i = 0; i < n; ++i) {
+        size_t term = lookup_row(index, &index->terms_by_text, term_hash(words[i]), words[i], 0);
+        if (term == SIZE_MAX) continue;
+        const NiyahTermEntry *entry = &index->terms[term];
+        double df = (double)entry->document_frequency;
+        double idf = log(1.0 + ((double)index->document_count - df + 0.5) / (df + 0.5));
+        cursors[used++] = (struct Cursor){entry, 0, idf};
+        size_t row = posting_row(index, &entry->postings[0]);
+        if (row < first) first = row;
+    }
+    if (!used) return 0;
+    const double avg = index->average_document_length;
+    double scores[WINDOW] = {0};
+    bool seen[WINDOW] = {false};
+    uint8_t touched[WINDOW];
+    while (first != SIZE_MAX) {
+        const size_t base = first - first % WINDOW;
+        size_t next = SIZE_MAX, touched_count = 0;
+        /* Keep query order so duplicate terms and floating-point sums match BM25. */
+        for (size_t i = 0; i < used; ++i) {
+            struct Cursor *c = &cursors[i];
+            while (c->pos < c->entry->posting_count) {
+                const NiyahPosting *p = &c->entry->postings[c->pos];
+                size_t row = posting_row(index, p);
+                if (row - base >= WINDOW) {
+                    if (row < next) next = row;
+                    break;
+                }
+                size_t slot = row - base;
+                if (!seen[slot]) {
+                    seen[slot] = true;
+                    touched[touched_count++] = (uint8_t)slot;
+                }
+                double tf = (double)p->term_frequency;
+                double dl = (double)index->documents[row].term_count;
+                double norm = index->k1 * (1.0 - index->b + index->b * (dl / avg));
+                scores[slot] += c->idf * ((tf * (index->k1 + 1.0)) / (tf + norm));
+                ++c->pos;
             }
-        } else if (term_compare(&next, &hits[0]) < 0) {
-            hits[0] = next;
-            sift_down(hits, count, 0);
         }
+        for (size_t i = 0; i < touched_count; ++i) {
+            size_t slot = touched[i];
+            NiyahSearchHit hit = {index->documents[base + slot].document_id, scores[slot]};
+            retain_hit(hits, hit_capacity, &count, hit);
+            scores[slot] = 0;
+            seen[slot] = false;
+        }
+        first = next;
     }
-
     qsort(hits, count, sizeof(*hits), term_compare);
-    free(scores);
     return count;
 }
 
 const NiyahDocument *niyah_index_document(const NiyahInvertedIndex *index, uint64_t document_id) {
-    if (!index || document_id == 0) return NULL;
-    for (size_t i = 0; i < index->document_count; ++i)
-        if (index->documents[i].document_id == document_id) return &index->documents[i];
-    return NULL;
+    if (!index || !document_id) return NULL;
+    size_t row = lookup_row(index, &index->documents_by_id, mix_id(document_id), NULL, document_id);
+    return row == SIZE_MAX ? NULL : &index->documents[row];
 }
