@@ -10,6 +10,13 @@ reject() {
 printf 'local\tفهرس\tfile\t18446744073709551615\t4294967295\tsha\tالبحث المحلي\n' > valid
 "$cli" index a.dalw valid
 "$cli" verify a.dalw
+for mode in info verify; do
+    if "$cli" "$mode" a.dalw >/dev/full 2>err; then
+        echo "$mode reported success after a stdout write error" >&2
+        exit 1
+    fi
+    grep -q '^stdout:' err
+done
 "$cli" search a.dalw 1 البحث المحلي > hit
 grep -q '"title":"فهرس"' hit
 grep -q '"offset":18446744073709551615,"length":4294967295' hit

@@ -207,11 +207,17 @@ static int cmd_info(const char *path, int verify, const char *pin) {
         dalw_close(&s);
         return 1;
     }
-    printf("docs=%u terms=%u tokens=%llu bytes=%zu verified=%d sha256=", s.ndocs, s.nterms,
-           (unsigned long long)s.total_tokens, s.size, s.signed_flag);
     char hex[65];
     digest_hex(s.sha256, hex);
-    puts(hex); dalw_close(&s); return 0;
+    int rc = 0;
+    if (printf("docs=%u terms=%u tokens=%llu bytes=%zu verified=%d sha256=%s\n",
+               s.ndocs, s.nterms, (unsigned long long)s.total_tokens, s.size,
+               s.signed_flag, hex) < 0 || fflush(stdout) != 0) {
+        perror("stdout");
+        rc = 1;
+    }
+    dalw_close(&s);
+    return rc;
 }
 
 static int cmd_batch(const DalwShard *shard, int use_rows)
