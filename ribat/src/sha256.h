@@ -1,9 +1,11 @@
 #ifndef RIBAT_SHA256_H
 #define RIBAT_SHA256_H
 
-typedef unsigned char ribat_u8;
-typedef unsigned int ribat_u32;
-typedef unsigned long ribat_u64;
+#include <stdint.h>
+
+typedef uint8_t ribat_u8;
+typedef uint32_t ribat_u32;
+typedef uint64_t ribat_u64;
 
 typedef struct {
     ribat_u32 h[8];

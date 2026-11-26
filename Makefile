@@ -76,6 +76,7 @@ check-components: model retrieval asm test-qkv-gradients
 	ctest --test-dir build/search --output-on-failure
 clean: clean-components
 clean-components:
+	$(MAKE) -C ribat clean
 	$(MAKE) -C model clean
 	$(MAKE) -C retrieval/native clean
 	$(MAKE) -C retrieval/lowlevel clean
@@ -94,3 +95,19 @@ build/think: tools/think.c Makefile
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -static $< -o $@
 
 check-host: build/think
+
+.PHONY: check-ribat check-al-kimiyya
+check-components: check-ribat check-al-kimiyya
+check-ribat:
+	$(MAKE) -C ribat test
+
+build/al-kimiyya: experiments/al-kimiyya/vigenere.c
+	mkdir -p $(@D)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror $< -o $@
+
+check-al-kimiyya: build/al-kimiyya
+	test "$$($< encrypt LEMON ATTACKATDAWN)" = LXFOPVEFRNHR
+	test "$$($< decrypt LEMON LXFOPVEFRNHR)" = ATTACKATDAWN
+	test "$$($< encrypt A '')" = ''
+	! $< encrypt '' ABC
+	! $< encrypt A 'A B'

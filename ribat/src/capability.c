@@ -12,7 +12,7 @@ static int bytes_equal(const ribat_u8 *a, const ribat_u8 *b, unsigned n) {
     return diff == 0;
 }
 
-static int rights_valid(unsigned rights) {
+static int rights_valid(ribat_u32 rights) {
     return rights != 0U && (rights & ~RIBAT_CAP_RIGHTS_ALL) == 0U;
 }
 
@@ -32,7 +32,7 @@ int ribat_cap_table_init(RibatCapTable *table, const ribat_u8 owner_id[16], riba
 int ribat_cap_owner_restart(RibatCapTable *table) {
     unsigned i;
     if (!table) return RIBAT_CAP_ERR_INPUT;
-    if (table->owner_version == (ribat_u64)~0UL) return RIBAT_CAP_ERR_VERSION_EXHAUSTED;
+    if (table->owner_version == UINT64_MAX) return RIBAT_CAP_ERR_VERSION_EXHAUSTED;
     table->owner_version++;
     for (i = 0; i < RIBAT_CAP_GUARDS_MAX; i++) {
         table->guards[i].live = 0;
@@ -41,7 +41,7 @@ int ribat_cap_owner_restart(RibatCapTable *table) {
     return RIBAT_CAP_OK;
 }
 
-int ribat_cap_guard_create(RibatCapTable *table, unsigned parent, unsigned *guard_index) {
+int ribat_cap_guard_create(RibatCapTable *table, ribat_u32 parent, ribat_u32 *guard_index) {
     unsigned i;
     if (!table || !guard_index) return RIBAT_CAP_ERR_INPUT;
     if (parent != RIBAT_CAP_NO_PARENT &&
@@ -49,7 +49,7 @@ int ribat_cap_guard_create(RibatCapTable *table, unsigned parent, unsigned *guar
     for (i = 0; i < RIBAT_CAP_GUARDS_MAX; i++) {
         RibatCapGuard *g = &table->guards[i];
         if (g->live) continue;
-        if (g->version == (ribat_u64)~0UL) continue;
+        if (g->version == UINT64_MAX) continue;
         g->version = g->version == 0 ? 1 : g->version + 1;
         g->parent = parent;
         g->live = 1;
@@ -57,13 +57,13 @@ int ribat_cap_guard_create(RibatCapTable *table, unsigned parent, unsigned *guar
         return RIBAT_CAP_OK;
     }
     for (i = 0; i < RIBAT_CAP_GUARDS_MAX; i++) {
-        if (!table->guards[i].live && table->guards[i].version == (ribat_u64)~0UL)
+        if (!table->guards[i].live && table->guards[i].version == UINT64_MAX)
             return RIBAT_CAP_ERR_VERSION_EXHAUSTED;
     }
     return RIBAT_CAP_ERR_FULL;
 }
 
-int ribat_cap_guard_revoke(RibatCapTable *table, unsigned guard_index) {
+int ribat_cap_guard_revoke(RibatCapTable *table, ribat_u32 guard_index) {
     unsigned pass, i;
     if (!table) return RIBAT_CAP_ERR_INPUT;
     if (guard_index >= RIBAT_CAP_GUARDS_MAX || !table->guards[guard_index].live)
@@ -85,8 +85,8 @@ int ribat_cap_guard_revoke(RibatCapTable *table, unsigned guard_index) {
     return RIBAT_CAP_OK;
 }
 
-int ribat_cap_issue(const RibatCapTable *table, unsigned guard_index, const ribat_u8 resource_id[32],
-                    unsigned rights, RibatCapability *out) {
+int ribat_cap_issue(const RibatCapTable *table, ribat_u32 guard_index, const ribat_u8 resource_id[32],
+                    ribat_u32 rights, RibatCapability *out) {
     if (!table || !resource_id || !out || !rights_valid(rights)) return RIBAT_CAP_ERR_INPUT;
     if (guard_index >= RIBAT_CAP_GUARDS_MAX || !table->guards[guard_index].live)
         return RIBAT_CAP_ERR_GUARD;
@@ -99,7 +99,7 @@ int ribat_cap_issue(const RibatCapTable *table, unsigned guard_index, const riba
     return RIBAT_CAP_OK;
 }
 
-int ribat_cap_delegate(const RibatCapability *parent, unsigned rights, RibatCapability *out) {
+int ribat_cap_delegate(const RibatCapability *parent, ribat_u32 rights, RibatCapability *out) {
     if (!parent || !out || !rights_valid(rights)) return RIBAT_CAP_ERR_INPUT;
     if ((parent->rights & RIBAT_CAP_DELEGATE) == 0U) return RIBAT_CAP_ERR_RIGHTS;
     if ((rights & parent->rights) != rights) return RIBAT_CAP_ERR_RIGHTS;
@@ -108,7 +108,7 @@ int ribat_cap_delegate(const RibatCapability *parent, unsigned rights, RibatCapa
     return RIBAT_CAP_OK;
 }
 
-int ribat_cap_validate(const RibatCapTable *table, const RibatCapability *cap, unsigned required_rights) {
+int ribat_cap_validate(const RibatCapTable *table, const RibatCapability *cap, ribat_u32 required_rights) {
     const RibatCapGuard *g;
     if (!table || !cap || !rights_valid(required_rights)) return RIBAT_CAP_ERR_INPUT;
     if (!bytes_equal(table->owner_id, cap->owner_id, 16) || table->owner_version != cap->owner_version)

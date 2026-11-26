@@ -15,7 +15,7 @@ dalw.o dalw_rows.o dalw_simhash.o: dalw_analysis.h
 $(LIB): $(OBJ)
 > ar rcs $@ $^
 
-dalw-cli: dalw_cli.c dalw_analysis.h niyah_dalw.h niyah_dalw.o $(LIB)
+dalw-cli: dalw_cli.c dalw_analysis.h niyah_dalw.h niyah_dalw.o $(LIB) .dalw-cli-link
 > $(CC) $(CFLAGS) -I../native $< niyah_dalw.o $(LIB) -lm -o $@
 
 test_dalw: test_dalw.c $(LIB)
@@ -32,7 +32,7 @@ test: test_dalw test_analysis dalw-cli
 > @set -e; dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; cd "$$dir"; "$(CURDIR)/test_dalw"; "$(CURDIR)/test_analysis"
 
 clean:
-> rm -f *.o $(LIB) dalw-cli test_dalw bench_isect test_niyah_dalw test_niyah_dalw_json test_analysis
+> rm -f *.o $(LIB) dalw-cli test_dalw bench_isect test_niyah_dalw test_niyah_dalw_json test_analysis .dalw-cli-link
 
 .PHONY: all test clean
 
@@ -66,3 +66,10 @@ windows-dll: dist/niyah_dalw.dll
 dist/niyah_dalw.dll: niyah_dalw.c niyah_dalw_json.c dalw.c sha256.c intersect.c dalw.h dalw_analysis.h niyah_dalw.h niyah_dalw_json.h ../native/niyah_search.h ../native/niyah_utf8.h
 > mkdir -p $(@D)
 > $(WIN_CC) -std=c11 -O2 -I../native -shared -static-libgcc $(filter %.c,$^) -lm -o $@
+
+# The root build requests a static CLI. Relink when a standalone build used different flags.
+.PHONY: FORCE
+.dalw-cli-link: FORCE
+> @set -e; tmp=$$(mktemp .dalw-cli-link.XXXXXX); trap 'rm -f "$$tmp"' EXIT; \
+>   printf '%s\n' "$(CC)" "$(CFLAGS)" > "$$tmp"; \
+>   if ! cmp -s "$$tmp" $@; then mv "$$tmp" $@; fi

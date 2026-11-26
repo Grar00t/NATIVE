@@ -44,7 +44,7 @@ void ribat_sha256_init(RibatSha256 *c) {
 }
 int ribat_sha256_update(RibatSha256 *c, const void *data, ribat_u64 len) {
     const ribat_u8 *p=(const ribat_u8 *)data;
-    const ribat_u64 max_bytes=((ribat_u64)~0UL)>>3;
+    const ribat_u64 max_bytes=UINT64_MAX >> 3;
     if (len && !p) return -1;
     if (len > max_bytes-c->total) return -1;
     c->total += len;

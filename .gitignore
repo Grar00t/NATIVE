@@ -26,3 +26,4 @@ retrieval/lowlevel/ll_harvest
 retrieval/lowlevel/dist/
 retrieval/ui/**/bin/
 retrieval/ui/**/obj/
+retrieval/lowlevel/.dalw-cli-link

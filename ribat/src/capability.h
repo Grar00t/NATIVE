@@ -4,7 +4,7 @@
 #include "sha256.h"
 
 #define RIBAT_CAP_GUARDS_MAX 64U
-#define RIBAT_CAP_NO_PARENT 0xffffffffU
+#define RIBAT_CAP_NO_PARENT UINT32_MAX
 
 #define RIBAT_CAP_READ     0x01U
 #define RIBAT_CAP_WRITE    0x02U
@@ -15,7 +15,7 @@
 
 typedef struct {
     ribat_u64 version;
-    unsigned parent;
+    ribat_u32 parent;
     ribat_u8 live;
 } RibatCapGuard;
 
@@ -28,10 +28,10 @@ typedef struct {
 typedef struct {
     ribat_u8 owner_id[16];
     ribat_u64 owner_version;
-    unsigned guard_index;
+    ribat_u32 guard_index;
     ribat_u64 guard_version;
     ribat_u8 resource_id[32];
-    unsigned rights;
+    ribat_u32 rights;
 } RibatCapability;
 
 enum {
@@ -47,11 +47,11 @@ enum {
 
 int ribat_cap_table_init(RibatCapTable *table, const ribat_u8 owner_id[16], ribat_u64 owner_version);
 int ribat_cap_owner_restart(RibatCapTable *table);
-int ribat_cap_guard_create(RibatCapTable *table, unsigned parent, unsigned *guard_index);
-int ribat_cap_guard_revoke(RibatCapTable *table, unsigned guard_index);
-int ribat_cap_issue(const RibatCapTable *table, unsigned guard_index, const ribat_u8 resource_id[32],
-                    unsigned rights, RibatCapability *out);
-int ribat_cap_delegate(const RibatCapability *parent, unsigned rights, RibatCapability *out);
-int ribat_cap_validate(const RibatCapTable *table, const RibatCapability *cap, unsigned required_rights);
+int ribat_cap_guard_create(RibatCapTable *table, ribat_u32 parent, ribat_u32 *guard_index);
+int ribat_cap_guard_revoke(RibatCapTable *table, ribat_u32 guard_index);
+int ribat_cap_issue(const RibatCapTable *table, ribat_u32 guard_index, const ribat_u8 resource_id[32],
+                    ribat_u32 rights, RibatCapability *out);
+int ribat_cap_delegate(const RibatCapability *parent, ribat_u32 rights, RibatCapability *out);
+int ribat_cap_validate(const RibatCapTable *table, const RibatCapability *cap, ribat_u32 required_rights);
 
 #endif

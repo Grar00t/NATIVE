@@ -29,6 +29,7 @@ retrieval/lowlevel/dalw-cli search manual.dalw 5 checkpoint
 `dalw-cli verify SHARD EXPECTED_BODY_SHA256` compares the verified body with a 64-digit hexadecimal digest you kept separately. Use the `sha256` value printed by `verify` on a trusted copy. The final 32 trailer bytes are excluded from the digest. Set `DALW_VERIFY=1` to check the trailer during a command-line search.
 
 Both `info` and `verify` exit with an error if the shard report cannot be written to stdout.
+The [local Arabic generation check](docs/dalw-arabic-generation.md) records prompt settings, retrieved byte ranges, answers and abstention failures.
 
 Each matching document produces one line of JSON with its title, source, score, and receipt ID. To index your own UTF-8 TSV, use `dalw-cli index OUT.dalw IN.tsv`. Each row contains the source URL, title, source filename, byte offset, byte length, digest, and text. Offsets and lengths are unsigned decimal integers. The first invalid row stops the import. Add `--skip-invalid` to report and skip malformed rows.
 
@@ -73,6 +74,7 @@ The desktop client opens local `.dalw` files and searches one or more indexes to
 | `model/` | Raw FP32 model training and inference, a mapped GGUF decoder, and local query and proof tools |
 | `retrieval/` | Index builder, search API, command-line tools, and desktop client |
 | `hadeed/` | BIOS bootloader and x86-64 kernel with timer interrupts, page and heap allocators, and a signed matrix self-test |
+| `ribat/` | Typed object IDs, streaming SHA-256 and versioned in-memory capabilities. See [Ribat in NATIVE](docs/ribat.md). |
 
 ## Verification
 

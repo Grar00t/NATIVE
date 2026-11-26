@@ -9,7 +9,7 @@ int main(void) {
     ribat_u8 owner[16], resource[32];
     RibatCapTable table;
     RibatCapability root_cap, child_cap, delegated, replacement;
-    unsigned root, child, reused;
+    ribat_u32 root, child, reused;
     ribat_u64 child_version;
 
     fill(owner, sizeof owner, 0x10);
@@ -48,7 +48,7 @@ int main(void) {
     if (ribat_cap_owner_restart(&table) != RIBAT_CAP_OK) return 26;
     if (ribat_cap_validate(&table, &replacement, RIBAT_CAP_READ) != RIBAT_CAP_ERR_OWNER) return 27;
 
-    table.owner_version = (ribat_u64)~0UL;
+    table.owner_version = UINT64_MAX;
     if (ribat_cap_owner_restart(&table) != RIBAT_CAP_ERR_VERSION_EXHAUSTED) return 28;
     return 0;
 }

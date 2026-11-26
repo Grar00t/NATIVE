@@ -13,6 +13,10 @@ export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
     "$root/hadeed/tests/memory_test.c" "$root/hadeed/kernel/memory.c" -o "$work/guest-memory-test"
 "$work/guest-memory-test"
 
+mkdir -p "$work/ribat"
+cp -R "$root/ribat/src" "$root/ribat/tests" "$root/ribat/Makefile" "$work/ribat/"
+make -C "$work/ribat" -j"$jobs" "CFLAGS=-std=c11 -Wall -Wextra -Wpedantic -Werror $link" test
+
 for component in engine retrieval/search; do
     build="$work/build/$component"
     cmake -S "$root/$component" -B "$build" -DCMAKE_BUILD_TYPE=Debug \
