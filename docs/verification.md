@@ -21,4 +21,12 @@ Model-file cases cover truncated and trailing bytes, unsupported versions, concu
 
 The search regressions cover Arabic paths and text, 64 indexes, result metadata larger than 16 KiB, invalid TSV offsets and lengths, read failures and existing output files. The in-memory index tests also exercise tied scores, empty documents, full-length text, and retrying after a failed allocation. HTML extraction tests cover quoted attributes, comments, script and style contents, and link limits.
 
+### Search measurements
+
+Run `make bench-search` to time queries after building a 3,072-document fixture. Each row reports the median of 11 warm batches in nanoseconds per query. Timing excludes process startup, index construction, shard verification and output. The in-memory API sums matching query terms. The shard API requires all query terms and uses each distinct term once.
+
+For a result comparison, build the same harness against both revisions and run each binary with `--dump`. Use `cmp` on the two outputs. The dump contains document IDs, hexadecimal floating-point scores and the leading source receipt at six result limits. Arabic token-boundary changes and malformed UTF-8 have separate regression cases. The fixture measures latency and result parity. Relevance evaluation requires queries with independently judged documents.
+
+The in-memory index uses 16-slot hash groups to look up terms and document IDs. Seven hash bits filter candidate keys before the full comparison. The scorer accumulates postings in windows of 256 document ordinals and visits only occupied windows. The public in-memory index structure has grown. Recompile applications that allocate it. Existing version 2 shard files use the same on-disk format.
+
 On Windows, `retrieval/ui/build.ps1` builds the native search DLL, the desktop client and the command-line probe. Model weights and generated indexes are local test outputs.

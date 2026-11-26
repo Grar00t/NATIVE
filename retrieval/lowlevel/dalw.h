@@ -1,4 +1,4 @@
-/* dalw v2: signed-shard Arabic-aware search index with BM25 + receipts. C11, little-endian. */
+/* dalw v2: Arabic-aware BM25 index with a SHA-256 trailer and source receipts. */
 #ifndef DALW_H
 #define DALW_H
 #include <stddef.h>

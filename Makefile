@@ -1,4 +1,5 @@
 JOBS ?= 2
+CMAKE_JOBS = $(if $(filter --jobserver-auth=% --jobserver-fds=%,$(MAKEFLAGS)),,--parallel $(JOBS))
 ENGINE_DIR := build/engine
 .DEFAULT_GOAL := all
 .PHONY: all engine lang asm hadeed check check-host check-boot clean
@@ -7,7 +8,7 @@ all: engine lang asm hadeed
 
 engine:
 	cmake -S engine -B $(ENGINE_DIR) -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static -DNIYAH_BUILD_TESTS=ON
-	cmake --build $(ENGINE_DIR) --parallel $(JOBS)
+	+cmake --build $(ENGINE_DIR) $(CMAKE_JOBS)
 
 lang:
 	$(MAKE) -C lang all tensor-backend
@@ -59,7 +60,7 @@ model:
 retrieval:
 	$(MAKE) -C retrieval/lowlevel CC="$(CC) -static" all
 	cmake -S retrieval/search -B build/search -DCMAKE_EXE_LINKER_FLAGS=-static
-	cmake --build build/search --parallel $(JOBS)
+	+cmake --build build/search $(CMAKE_JOBS)
 
 .PHONY: check-components clean-components test-qkv-gradients
 test-qkv-gradients:
@@ -77,3 +78,12 @@ clean-components:
 	$(MAKE) -C model clean
 	$(MAKE) -C retrieval/native clean
 	$(MAKE) -C retrieval/lowlevel clean
+
+.PHONY: bench-search
+SEARCH_SOURCES = retrieval/search/niyah_index.c retrieval/lowlevel/dalw.c retrieval/lowlevel/sha256.c retrieval/lowlevel/intersect.c
+build/search-bench: tests/search_bench.c $(SEARCH_SOURCES) retrieval/search/niyah_index.h retrieval/lowlevel/dalw.h retrieval/native/niyah_utf8.h
+	mkdir -p build
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Iretrieval/search -Iretrieval/lowlevel -o $@ tests/search_bench.c $(SEARCH_SOURCES) -lm
+
+bench-search: build/search-bench
+	./build/search-bench

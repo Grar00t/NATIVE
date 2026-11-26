@@ -46,4 +46,8 @@ awk 'BEGIN{printf "local\t";for(i=0;i<20000;i++)printf "a";print "\tfile\t0\t3\t
 "$cli" search large.dalw 1 البحث >large.json
 test "$(wc -l <large.json)" -eq 1
 awk -F'"title":"' 'NF==2 {split($2,a,"\"");if(length(a[1])==20000)ok=1} END{exit !ok}' large.json
+printf 'local\traw_\355\240\200\tfile\t0\t3\tsha\tالبحث\n' > invalid-utf8
+"$cli" index unicode.dalw invalid-utf8
+"$cli" search unicode.dalw 1 البحث > unicode-result
+grep -Fq '"title":"raw_???"' unicode-result
 echo 'DALW CLI passed'

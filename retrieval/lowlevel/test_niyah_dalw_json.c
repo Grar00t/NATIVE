@@ -47,6 +47,12 @@ int main(void)
     CHECK(strstr(out, "\"receipt\":{") != NULL);
     CHECK(n > 0 && out[n - 1] == '}');
 
+    n = niyah_dalw_search_json(h, "weather \xED\xA0\x80", 1, 1u, out, sizeof out, &st);
+    CHECK(n > 0 && st == NIYAH_DALW_OK && strstr(out, "weather ???") != NULL);
+    CHECK(strstr(out, "\xED") == NULL && strstr(out, "\"count\":1") != NULL);
+    n = niyah_dalw_search_json(h, "weather \xEF\xBF\xBD", 1, 1u, out, sizeof out, &st);
+    CHECK(n > 0 && strstr(out, "weather \xEF\xBF\xBD") != NULL);
+
     n = niyah_dalw_search_json(h, "zzzzqqq", 1, 10u, out, sizeof out, &st);
     CHECK(n > 0 && st == NIYAH_DALW_OK && strstr(out, "\"count\":0,\"hits\":[]") != NULL);
 

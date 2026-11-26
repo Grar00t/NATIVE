@@ -2,6 +2,7 @@
    AND query, BM25 top-k, receipts. C11, little-endian. */
 #define _POSIX_C_SOURCE 200809L
 #include "dalw.h"
+#include "../native/niyah_utf8.h"
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -81,25 +82,6 @@ static uint64_t mix64(uint64_t x) {
 
 /* ================= UTF-8 + normalisation ================= */
 
-static uint32_t utf8_next(const unsigned char *s, size_t len, size_t *i) {
-    unsigned c = s[*i]; size_t n = len - *i;
-    if (c < 0x80) { (*i)++; return c; }
-    if (c >= 0xC2 && c <= 0xDF && n >= 2 && (s[*i+1] & 0xC0) == 0x80) {
-        uint32_t cp = ((c & 0x1Fu) << 6) | (s[*i+1] & 0x3Fu); *i += 2; return cp;
-    }
-    if (c >= 0xE0 && c <= 0xEF && n >= 3 && (s[*i+1] & 0xC0) == 0x80 && (s[*i+2] & 0xC0) == 0x80) {
-        uint32_t cp = ((c & 0x0Fu) << 12) | ((s[*i+1] & 0x3Fu) << 6) | (s[*i+2] & 0x3Fu);
-        if (cp >= 0x800) { *i += 3; return cp; }
-    }
-    if (c >= 0xF0 && c <= 0xF4 && n >= 4 && (s[*i+1] & 0xC0) == 0x80 &&
-        (s[*i+2] & 0xC0) == 0x80 && (s[*i+3] & 0xC0) == 0x80) {
-        uint32_t cp = ((c & 0x07u) << 18) | ((s[*i+1] & 0x3Fu) << 12) |
-                      ((s[*i+2] & 0x3Fu) << 6) | (s[*i+3] & 0x3Fu);
-        if (cp >= 0x10000 && cp <= 0x10FFFF) { *i += 4; return cp; }
-    }
-    (*i)++; return 0xFFFD;
-}
-
 /* normalised code point, 0 = separator, SKIP_CP = ignore (diacritic/tatweel) */
 static uint32_t norm_cp(uint32_t cp) {
     if (cp < 0x80) {
@@ -147,7 +129,7 @@ static void tokenize_cps(const char *text, size_t len, CpCb cb, void *u) {
     uint32_t buf[MAXTOK]; size_t i = 0, n = 0;
     if (!text || !cb) return;
     while (i < len) {
-        uint32_t c = norm_cp(utf8_next(s, len, &i));
+        uint32_t c = norm_cp(niyah_utf8_next(s, len, &i));
         if (c == SKIP_CP) continue;
         if (c == 0) { if (n) { cb(buf, n, u); n = 0; } continue; }
         if (n < MAXTOK) buf[n++] = c;
@@ -644,7 +626,7 @@ static int find_term(const DalwShard *s, uint64_t h, QTerm *q) {
 
 /* Postings are sorted. Checking the last ID bounds the entire decoded list. */
 static int load_postings(const DalwShard *s, const QTerm *term, uint32_t *out) {
-    if (dalw_plist_decode(term->dp, term->dbytes, term->df, out) < 0) return -1;
+    if (!term->df || dalw_plist_decode(term->dp, term->dbytes, term->df, out) < 0) return -1;
     return out[term->df - 1] < s->ndocs ? 0 : -1;
 }
 
@@ -664,10 +646,11 @@ static int intersect_terms(const DalwShard *s, const uint64_t *hashes, size_t n,
         q[j] = t;
     }
     A = (uint32_t *)malloc(((size_t)q[0].df + DALW_SLACK) * 4);
+    if (!A || load_postings(s, &q[0], A) < 0) { st = -1; goto fail; }
+    if (n == 1) { *res = A; *cnt = q[0].df; return 0; }
     C = (uint32_t *)malloc(((size_t)q[0].df + DALW_SLACK) * 4);
     B = (uint32_t *)malloc(((size_t)q[n-1].df + DALW_SLACK) * 4);
-    if (!A || !B || !C) { st = -1; goto fail; }
-    if (load_postings(s, &q[0], A) < 0) { st = -1; goto fail; }
+    if (!B || !C) { st = -1; goto fail; }
     size_t cur = q[0].df;
     for (size_t i = 1; i < n && cur; i++) {
         if (load_postings(s, &q[i], B) < 0) { st = -1; goto fail; }
@@ -694,6 +677,42 @@ size_t dalw_query(const DalwShard *s, const uint64_t *hashes, size_t n,
     return st < 0 ? 0 : res;
 }
 
+static int rank_hit(const void *left, const void *right) {
+    const DalwHit *a = left, *b = right;
+    if (a->score != b->score) return a->score > b->score ? -1 : 1;
+    return (a->doc > b->doc) - (a->doc < b->doc);
+}
+
+static void sift_hit(DalwHit *heap, size_t n, size_t parent) {
+    DalwHit saved = heap[parent];
+    while (parent < n / 2) {
+        size_t child = parent * 2 + 1;
+        if (child + 1 < n && rank_hit(&heap[child + 1], &heap[child]) > 0) ++child;
+        if (rank_hit(&saved, &heap[child]) >= 0) break;
+        heap[parent] = heap[child];
+        parent = child;
+    }
+    heap[parent] = saved;
+}
+
+static float bm25_hit(const DalwShard *s, uint32_t doc, uint32_t frequency, float idf, float avg) {
+    float tf = (float)frequency;
+    float length = (float)rd32(s->docs + (size_t)doc * DOC_SZ + 24);
+    return idf * tf * (BM25_K1 + 1.0f) /
+           (tf + BM25_K1 * (1.0f - BM25_B + BM25_B * length / avg));
+}
+
+/* Candidates arrive in doc order, so an equal score cannot displace an earlier hit. */
+static void keep_small(DalwHit *out, size_t used, size_t cap, DalwHit hit) {
+    if (used == cap && hit.score <= out[cap - 1].score) return;
+    size_t pos = used < cap ? used : cap - 1;
+    while (pos && out[pos - 1].score < hit.score) {
+        out[pos] = out[pos - 1];
+        --pos;
+    }
+    out[pos] = hit;
+}
+
 size_t dalw_search(const DalwShard *s, const uint64_t *hashes, size_t n,
                    DalwHit *out, size_t k, int *status) {
     size_t cnt = 0, m = 0; uint32_t *cand = NULL, *D = NULL, *T = NULL; float *sc = NULL;
@@ -704,37 +723,47 @@ size_t dalw_search(const DalwShard *s, const uint64_t *hashes, size_t n,
     if (!q) { st = -1; goto done; }
     st = intersect_terms(s, hashes, n, q, &cand, &cnt);
     if (st < 0 || cnt == 0) goto done;
-    uint32_t maxdf = 0;
-    for (size_t i = 0; i < n; i++) if (q[i].df > maxdf) maxdf = q[i].df;
-    sc = (float *)calloc(cnt, sizeof(float));
-    D = (uint32_t *)malloc(((size_t)maxdf + DALW_SLACK) * 4);
-    T = (uint32_t *)malloc(((size_t)maxdf + DALW_SLACK) * 4);
-    if (!sc || !D || !T) { st = -1; goto done; }
-    double avgdl = s->ndocs ? (double)s->total_tokens / s->ndocs : 1.0;
-    if (avgdl < 1.0) avgdl = 1.0;
-    for (size_t t = 0; t < n; t++) {
-        if (load_postings(s, &q[t], D) < 0 ||
-            dalw_tf_decode(q[t].tp, q[t].tbytes, q[t].df, T) < 0) { st = -1; goto done; }
-        float idf = (float)log(1.0 + ((double)s->ndocs - q[t].df + 0.5) / (q[t].df + 0.5));
+    const size_t length = (size_t)q[n - 1].df + DALW_SLACK;
+    T = malloc(length * sizeof(*T));
+    if (!T) { st = -1; goto done; }
+    if (n > 1) {
+        D = malloc(length * sizeof(*D));
+        sc = calloc(cnt, sizeof(*sc));
+        if (!D || !sc) { st = -1; goto done; }
+    }
+
+    double avgdl = (double)s->total_tokens / s->ndocs;
+    float avg = avgdl < 1.0 ? 1.0f : (float)avgdl;
+    float idf = 0.0f;
+    for (size_t t = 0; t < n; ++t) {
+        if (dalw_tf_decode(q[t].tp, q[t].tbytes, q[t].df, T) < 0) { st = -1; goto done; }
+        idf = (float)log(1.0 + ((double)s->ndocs - q[t].df + 0.5) / (q[t].df + 0.5));
+        if (n == 1) break; /* cand and T are already aligned. */
+        if (load_postings(s, &q[t], D) < 0) { st = -1; goto done; }
         size_t p = 0;
-        for (size_t ci = 0; ci < cnt; ci++) {
-            while (p < q[t].df && D[p] < cand[ci]) p++;
-            if (p < q[t].df && D[p] == cand[ci]) {
-                float tfv = (float)T[p];
-                float dl = (float)rd32(s->docs + (size_t)cand[ci] * DOC_SZ + 24);
-                sc[ci] += idf * tfv * (BM25_K1 + 1.0f) /
-                          (tfv + BM25_K1 * (1.0f - BM25_B + BM25_B * dl / (float)avgdl));
-            }
+        for (size_t i = 0; i < cnt; ++i) {
+            while (p < q[t].df && D[p] < cand[i]) ++p;
+            if (p < q[t].df && D[p] == cand[i])
+                sc[i] += bm25_hit(s, cand[i], T[p], idf, avg);
         }
     }
-    for (size_t ci = 0; ci < cnt; ci++) {
-        float score = sc[ci];
-        if (m == k && !(score > out[m-1].score)) continue;
-        size_t pos = m < k ? m : k - 1;
-        if (m < k) m++;
-        while (pos > 0 && out[pos-1].score < score) { out[pos] = out[pos-1]; pos--; }
-        out[pos].doc = cand[ci]; out[pos].score = score;
+
+    m = cnt < k ? cnt : k;
+    enum { SMALL_TOP_K = 64 };
+    for (size_t i = 0; i < cnt; ++i) {
+        DalwHit hit = {.doc = cand[i], .score = sc ? sc[i] : bm25_hit(s, cand[i], T[i], idf, avg)};
+        if (m <= SMALL_TOP_K) {
+            keep_small(out, i < m ? i : m, m, hit);
+        } else if (i < m) {
+            out[i] = hit;
+            if (i + 1 == m && cnt > m)
+                for (size_t p = m / 2; p > 0; --p) sift_hit(out, m, p - 1);
+        } else if (rank_hit(&hit, &out[0]) < 0) {
+            out[0] = hit;
+            sift_hit(out, m, 0);
+        }
     }
+    if (m > SMALL_TOP_K) qsort(out, m, sizeof(*out), rank_hit);
 done:
     free(q); free(cand); free(D); free(T); free(sc);
     if (status) *status = st;
@@ -772,7 +801,7 @@ static void sb_json(SB *b, const char *s, size_t len) {
         else if (c < 0x20) { char t[8]; snprintf(t, sizeof t, "\\u%04x", c); sb_raw(b, t, 6); i++; }
         else if (c < 0x80) { sb_raw(b, s + i, 1); i++; }
         else {
-            size_t j = i; uint32_t cp = utf8_next(u, len, &j);
+            size_t j = i; uint32_t cp = niyah_utf8_next(u, len, &j);
             if (cp == 0xFFFD && j - i == 1) sb_raw(b, "?", 1); else sb_raw(b, s + i, j - i);
             i = j;
         }

@@ -27,6 +27,44 @@ static int build_shard(const char *path, const char *const *titles, const char *
     return rc;
 }
 
+static int reference_order(const void *left, const void *right) {
+    const NiyahDalwHit *a = left, *b = right;
+    if (a->score != b->score) return a->score > b->score ? -1 : 1;
+    if (a->shard != b->shard) return a->shard < b->shard ? -1 : 1;
+    return (a->doc > b->doc) - (a->doc < b->doc);
+}
+
+static void check_rank_prefixes(const char *a, const char *b) {
+    const char *paths[] = {a, b, a, b, a, b};
+    NiyahDalwHit expected[24], actual[24];
+    size_t count = 0;
+    int status = -1;
+    for (uint32_t i = 0; i < 6; ++i) {
+        NiyahDalw *one = niyah_dalw_open(&paths[i], 1, 1, &status);
+        CHECK(one != NULL);
+        if (!one) return;
+        size_t n = niyah_dalw_query(one, "search", 1, expected + count, 24 - count, &status);
+        CHECK(status == NIYAH_DALW_OK);
+        for (size_t j = 0; j < n; ++j) expected[count + j].shard = i;
+        niyah_dalw_close(one);
+        count += n;
+    }
+    CHECK(count == 9);
+    qsort(expected, count, sizeof(*expected), reference_order);
+    NiyahDalw *all = niyah_dalw_open(paths, 6, 1, &status);
+    CHECK(all != NULL);
+    if (!all) return;
+    for (size_t k = 1; k <= count + 1; ++k) {
+        size_t n = niyah_dalw_query(all, "search", 1, actual, k, &status);
+        CHECK(status == NIYAH_DALW_OK && n == (count < k ? count : k));
+        for (size_t j = 0; j < n; ++j) {
+            CHECK(reference_order(&actual[j], &expected[j]) == 0);
+            CHECK(actual[j].document_id == expected[j].document_id);
+        }
+    }
+    niyah_dalw_close(all);
+}
+
 int main(void)
 {
     static const char *t1[] = { "d0", "d1", "d2" };
@@ -49,6 +87,7 @@ int main(void)
 
     CHECK(build_shard(p1, t1, x1, 3) == 0);
     CHECK(build_shard(p2, t2, x2, 1) == 0);
+    check_rank_prefixes(p1, p2);
 
     /* argument checks */
     CHECK(niyah_dalw_open(NULL, 1, 0, &st) == NULL && st == NIYAH_DALW_E_ARG);

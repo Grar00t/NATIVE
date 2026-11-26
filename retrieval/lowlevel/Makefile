@@ -9,6 +9,8 @@ all: $(LIB) dalw-cli
 %.o: %.c dalw.h
 > $(CC) $(CFLAGS) -c $< -o $@
 
+dalw.o: ../native/niyah_utf8.h
+
 $(LIB): $(OBJ)
 > ar rcs $@ $^
 
@@ -43,7 +45,7 @@ test-adapter: test_niyah_dalw
 
 .PHONY: test-adapter
 
-niyah_dalw_json.o: niyah_dalw_json.c niyah_dalw_json.h niyah_dalw.h ../native/niyah_search.h
+niyah_dalw_json.o: niyah_dalw_json.c niyah_dalw_json.h niyah_dalw.h ../native/niyah_search.h ../native/niyah_utf8.h
 > $(CC) $(CFLAGS) $(STRICT) -I../native -c $< -o $@
 
 test_niyah_dalw_json: test_niyah_dalw_json.c niyah_dalw_json.o niyah_dalw.o $(LIB)
@@ -57,6 +59,6 @@ test-json: test_niyah_dalw_json
 .PHONY: windows-dll
 WIN_CC ?= x86_64-w64-mingw32-gcc
 windows-dll: dist/niyah_dalw.dll
-dist/niyah_dalw.dll: niyah_dalw.c niyah_dalw_json.c dalw.c sha256.c intersect.c dalw.h niyah_dalw.h niyah_dalw_json.h ../native/niyah_search.h
+dist/niyah_dalw.dll: niyah_dalw.c niyah_dalw_json.c dalw.c sha256.c intersect.c dalw.h niyah_dalw.h niyah_dalw_json.h ../native/niyah_search.h ../native/niyah_utf8.h
 > mkdir -p $(@D)
 > $(WIN_CC) -std=c11 -O2 -I../native -shared -static-libgcc $(filter %.c,$^) -lm -o $@
