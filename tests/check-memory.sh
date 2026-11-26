@@ -9,6 +9,10 @@ link="-no-pie $flags"
 export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
 export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 
+"${CC:-cc}" -std=c11 -Wall -Wextra -Wpedantic -Werror $link -I"$root/hadeed/kernel" \
+    "$root/hadeed/tests/memory_test.c" "$root/hadeed/kernel/memory.c" -o "$work/guest-memory-test"
+"$work/guest-memory-test"
+
 for component in engine retrieval/search; do
     build="$work/build/$component"
     cmake -S "$root/$component" -B "$build" -DCMAKE_BUILD_TYPE=Debug \

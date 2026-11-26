@@ -2,7 +2,6 @@
 
 #define E820_INFO_ADDR 0x5000UL
 #define E820_ENTRIES_ADDR 0x5010UL
-#define E820_MAX_ENTRIES 128U
 #define E820_USABLE 1U
 #define LOW_RESERVED_END 0x00200000UL
 #define PML4_ADDR 0x00009000UL
@@ -12,13 +11,6 @@
 #define PTE_ADDR_MASK 0x000ffffffffff000UL
 #define PT_POOL_TABLES 24U
 #define BUDDY_TOTAL_BITS 131071UL
-
-struct __attribute__((packed)) e820_entry {
-    u64 base;
-    u64 length;
-    u32 type;
-    u32 attributes;
-};
 
 __attribute__((used, section(".rodata.m4")))
 const u64 m4_e820_info_addr = E820_INFO_ADDR;
@@ -34,6 +26,9 @@ const u32 buddy_order_offsets[HADEED_MAX_ORDER + 2U] = {
 
 __attribute__((used, section(".m4meta"), aligned(64)))
 u8 buddy_free_bitmap[16384];
+
+__attribute__((section(".m4meta"), aligned(64)))
+static u8 buddy_allocated_bitmap[sizeof buddy_free_bitmap];
 
 __attribute__((used, section(".m4meta"), aligned(64)))
 u8 page_usable_bitmap[8192];
@@ -100,58 +95,48 @@ static void add_usable_run(u64 start_page, u64 end_page)
     }
 }
 
+/* Only complete usable pages may be allocated. Any reserved byte excludes a page. */
+static void apply_e820(const struct e820_entry *entry, int usable)
+{
+    const u64 limit = HADEED_MAX_PHYS_PAGES * HADEED_PAGE_SIZE;
+    const u64 mask = HADEED_PAGE_SIZE - 1UL;
+    u64 end, first, last, page;
+
+    if ((entry->attributes & 1U) == 0U || entry->length == 0UL || entry->base >= limit)
+        return;
+    end = entry->length > limit - entry->base ? limit : entry->base + entry->length;
+    first = (entry->base + (usable ? mask : 0UL)) / HADEED_PAGE_SIZE;
+    last = (end + (usable ? 0UL : mask)) / HADEED_PAGE_SIZE;
+    for (page = first; page < last; ++page) {
+        if (usable) bit_set(page_usable_bitmap, page);
+        else bit_clear(page_usable_bitmap, page);
+    }
+}
+
 u64 memory_init(void)
 {
     const volatile u32 *const info = (const volatile u32 *)E820_INFO_ADDR;
-    const struct e820_entry *const entries = (const struct e820_entry *)E820_ENTRIES_ADDR;
-    const u64 limit = HADEED_MAX_PHYS_PAGES * HADEED_PAGE_SIZE;
-    u32 count = info[0];
-    const u32 entry_size = info[1];
+    const struct e820_entry *entries = (const struct e820_entry *)E820_ENTRIES_ADDR;
+    return memory_init_map(entries, info[1] == sizeof *entries ? info[0] : 0U);
+}
+
+u64 memory_init_map(const struct e820_entry *entries, u32 count)
+{
     u64 usable_pages = 0UL;
     u64 page;
     u32 i;
 
     bytes_zero(buddy_free_bitmap, sizeof buddy_free_bitmap);
+    bytes_zero(buddy_allocated_bitmap, sizeof buddy_allocated_bitmap);
     bytes_zero(page_usable_bitmap, sizeof page_usable_bitmap);
     page_table_pool_used = 0U;
-
-    if (entry_size != 24U) return 0UL;
-    if (count > E820_MAX_ENTRIES) count = E820_MAX_ENTRIES;
+    if (!entries || count > E820_MAX_ENTRIES) return 0UL;
 
     for (i = 0U; i < count; ++i) {
-        const struct e820_entry *const e = &entries[i];
-        u64 raw_end;
-        u64 start;
-        u64 end;
-        if (e->type != E820_USABLE || e->length == 0UL || (e->attributes & 1U) == 0U) continue;
-        if (e->base >= limit || e->base > (~0UL - e->length)) continue;
-        raw_end = e->base + e->length;
-        if (raw_end > limit) raw_end = limit;
-        start = (e->base + (HADEED_PAGE_SIZE - 1UL)) & ~(HADEED_PAGE_SIZE - 1UL);
-        end = raw_end & ~(HADEED_PAGE_SIZE - 1UL);
-        if (end <= start) continue;
-        for (page = start / HADEED_PAGE_SIZE; page < end / HADEED_PAGE_SIZE; ++page) {
-            bit_set(page_usable_bitmap, page);
-        }
+        if (entries[i].type == E820_USABLE) apply_e820(&entries[i], 1);
     }
-
-    /* Reserved/non-type-1 entries override overlapping usable ranges. */
     for (i = 0U; i < count; ++i) {
-        const struct e820_entry *const e = &entries[i];
-        u64 raw_end;
-        u64 start;
-        u64 end;
-        if (e->type == E820_USABLE || e->length == 0UL) continue;
-        if (e->base >= limit || e->base > (~0UL - e->length)) continue;
-        raw_end = e->base + e->length;
-        if (raw_end > limit) raw_end = limit;
-        start = e->base & ~(HADEED_PAGE_SIZE - 1UL);
-        end = (raw_end + (HADEED_PAGE_SIZE - 1UL)) & ~(HADEED_PAGE_SIZE - 1UL);
-        if (end > limit) end = limit;
-        if (end <= start) continue;
-        for (page = start / HADEED_PAGE_SIZE; page < end / HADEED_PAGE_SIZE; ++page) {
-            bit_clear(page_usable_bitmap, page);
-        }
+        if (entries[i].type != E820_USABLE) apply_e820(&entries[i], 0);
     }
 
     for (page = 0UL; page < LOW_RESERVED_END / HADEED_PAGE_SIZE; ++page) {
@@ -205,6 +190,7 @@ __attribute__((noinline)) u64 page_alloc(u32 order)
                 --current;
                 buddy_mark_free(split_page, current);
             }
+            bit_set(buddy_allocated_bitmap, buddy_bit(order, page));
             return page * HADEED_PAGE_SIZE;
         }
     }
@@ -218,6 +204,9 @@ __attribute__((noinline)) void page_free(u64 physical_page, u32 order)
     page = physical_page / HADEED_PAGE_SIZE;
     if (page >= HADEED_MAX_PHYS_PAGES || (page & ((1UL << order) - 1UL)) != 0UL) return;
 
+    if (!bit_get(buddy_allocated_bitmap, buddy_bit(order, page))) return;
+    bit_clear(buddy_allocated_bitmap, buddy_bit(order, page));
+
     while (order < HADEED_MAX_ORDER) {
         const u64 buddy = page ^ (1UL << order);
         if (buddy >= HADEED_MAX_PHYS_PAGES || !buddy_is_free(buddy, order)) break;
@@ -228,55 +217,61 @@ __attribute__((noinline)) void page_free(u64 physical_page, u32 order)
     buddy_mark_free(page, order);
 }
 
-static u64 *pt_alloc_table(void)
+static u64 *new_table(void)
 {
-    u64 *table;
-    usize i;
-    if (page_table_pool_used >= PT_POOL_TABLES) return (u64 *)0;
-    table = &page_table_pool[page_table_pool_used][0];
-    ++page_table_pool_used;
-    for (i = 0UL; i < 512UL; ++i) table[i] = 0UL;
+    u64 *table = page_table_pool[page_table_pool_used++];
+    bytes_zero((u8 *)table, HADEED_PAGE_SIZE);
     return table;
 }
 
-static u64 *next_table(u64 *table, u64 index)
+__attribute__((noinline)) int map_pages_4k(u64 physical_page, u64 virtual_address, usize count)
 {
-    u64 entry = table[index];
-    u64 *next;
-    if ((entry & PTE_PRESENT) != 0UL) {
-        if ((entry & PTE_PS) != 0UL) return (u64 *)0;
-        return (u64 *)(usize)(entry & PTE_ADDR_MASK);
+    const u64 first = (virtual_address >> 12) & 511UL;
+    const u64 top = virtual_address >> 47;
+    u64 *table = (u64 *)PML4_ADDR;
+    unsigned shift;
+    usize i;
+
+    if (count == 0 || count > 512UL - first || (top != 0 && top != 0x1ffffUL) ||
+        (virtual_address & (HADEED_PAGE_SIZE - 1UL)) != 0 ||
+        (physical_page & ~PTE_ADDR_MASK) != 0 ||
+        count - 1UL > (PTE_ADDR_MASK - physical_page) / HADEED_PAGE_SIZE) return -1;
+
+    for (shift = 39; shift >= 21; shift -= 9) {
+        u64 *slot = &table[(virtual_address >> shift) & 511UL];
+        if ((*slot & PTE_PRESENT) != 0) {
+            if ((*slot & PTE_PS) != 0 || (*slot & PTE_WRITE) == 0) return -1;
+            table = (u64 *)(usize)(*slot & PTE_ADDR_MASK);
+            continue;
+        }
+        /* Below the first absent entry the rest of the subtree is empty. */
+        if ((shift - 12U) / 9U > PT_POOL_TABLES - page_table_pool_used) return -1;
+        do {
+            table = new_table();
+            *slot = (u64)(usize)table | PTE_PRESENT | PTE_WRITE;
+            shift -= 9U;
+            slot = &table[(virtual_address >> shift) & 511UL];
+        } while (shift > 12U);
+        break;
     }
-    next = pt_alloc_table();
-    if (next == (u64 *)0) return (u64 *)0;
-    table[index] = ((u64)(usize)next & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE;
-    return next;
+
+    for (i = 0; i < count; ++i) {
+        u64 entry = table[first + i];
+        u64 expected = physical_page + i * HADEED_PAGE_SIZE;
+        if ((entry & PTE_PRESENT) && ((entry & PTE_ADDR_MASK) != expected || !(entry & PTE_WRITE)))
+            return -1;
+    }
+    for (i = 0; i < count; ++i) {
+        u64 va = virtual_address + i * HADEED_PAGE_SIZE;
+        if (!(table[first + i] & PTE_PRESENT)) {
+            table[first + i] = (physical_page + i * HADEED_PAGE_SIZE) | PTE_PRESENT | PTE_WRITE;
+            __asm__ volatile ("invlpg (%0)" : : "r" (va) : "memory");
+        }
+    }
+    return 0;
 }
 
-__attribute__((noinline)) int map_page_4k(u64 physical_page, u64 virtual_address)
+int map_page_4k(u64 physical_page, u64 virtual_address)
 {
-    u64 *pml4 = (u64 *)PML4_ADDR;
-    u64 *pdpt;
-    u64 *pd;
-    u64 *pt;
-    const u64 top = virtual_address >> 48;
-    const u64 sign = (virtual_address >> 47) & 1UL;
-    const u64 pml4_i = (virtual_address >> 39) & 0x1ffUL;
-    const u64 pdpt_i = (virtual_address >> 30) & 0x1ffUL;
-    const u64 pd_i = (virtual_address >> 21) & 0x1ffUL;
-    const u64 pt_i = (virtual_address >> 12) & 0x1ffUL;
-
-    if ((physical_page & (HADEED_PAGE_SIZE - 1UL)) != 0UL ||
-        (virtual_address & (HADEED_PAGE_SIZE - 1UL)) != 0UL) return -1;
-    if ((!sign && top != 0UL) || (sign && top != 0xffffUL)) return -1;
-
-    pdpt = next_table(pml4, pml4_i);
-    if (pdpt == (u64 *)0) return -1;
-    pd = next_table(pdpt, pdpt_i);
-    if (pd == (u64 *)0) return -1;
-    pt = next_table(pd, pd_i);
-    if (pt == (u64 *)0) return -1;
-    pt[pt_i] = (physical_page & PTE_ADDR_MASK) | PTE_PRESENT | PTE_WRITE;
-    __asm__ volatile ("invlpg (%0)" : : "r" ((void *)(usize)virtual_address) : "memory");
-    return 0;
+    return map_pages_4k(physical_page, virtual_address, 1);
 }

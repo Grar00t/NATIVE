@@ -51,7 +51,7 @@ ISR_NOERR 25
 ISR_NOERR 26
 ISR_NOERR 27
 ISR_NOERR 28
-ISR_NOERR 29
+ISR_ERR   29
 ISR_ERR   30
 ISR_NOERR 31
 ISR_NOERR 32
@@ -101,6 +101,7 @@ isr_common:
     movq 120(%rsi), %rdi
     movq %rsp, %r12
     andq $-16, %rsp
+    cld
     call isr_dispatch
     movq %r12, %rsp
 

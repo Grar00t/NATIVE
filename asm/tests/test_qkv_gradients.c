@@ -194,12 +194,35 @@ static bool check_trained(const char *path) {
     return true;
 }
 
+/* The nine-byte corpus has exactly one update per epoch. Recover the second
+ * learning rate from the target bias and an independent loss derivative. */
+static bool check_second_rate(const char *corpus, const char *first, const char *second) {
+    struct example ex = {0};
+    double a[COUNT], b[COUNT];
+    if (!read_example(corpus, &ex) || !read_export(first, a) || !read_export(second, b))
+        return false;
+    const size_t bias = OB + ex.bytes[CTX];
+    const double value = a[bias], eps = 1e-5;
+    a[bias] = value + eps;
+    double plus = loss(&ex, a);
+    a[bias] = value - eps;
+    double minus = loss(&ex, a);
+    double gradient = (plus - minus) / (2 * eps);
+    double measured = (value - b[bias]) / gradient;
+    const double expected = 0.025 * 32 / 33;
+    printf("epoch two learning rate: measured %.9f expected %.9f\n", measured, expected);
+    return isfinite(measured) && fabs(measured - expected) < 1e-6;
+}
+
 int main(int argc, char **argv) {
+    if (argc == 5 && strcmp(argv[1], "--second-rate") == 0)
+        return check_second_rate(argv[2], argv[3], argv[4]) ? EXIT_SUCCESS : EXIT_FAILURE;
     if (argc == 3 && strcmp(argv[1], "--trained") == 0)
         return check_trained(argv[2]) ? EXIT_SUCCESS : EXIT_FAILURE;
     if (argc != 4) {
         fprintf(stderr, "usage: %s CORPUS INITIAL_EXPORT ONE_STEP_EXPORT\n"
-                        "       %s --trained TRAINED_EXPORT\n", argv[0], argv[0]);
+                        "       %s --trained TRAINED_EXPORT\n"
+                        "       %s --second-rate CORPUS FIRST_EXPORT SECOND_EXPORT\n", argv[0], argv[0], argv[0]);
         return EXIT_FAILURE;
     }
     struct example ex = {0};

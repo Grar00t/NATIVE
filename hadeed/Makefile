@@ -5,7 +5,12 @@ OBJCOPY ?= objcopy
 QEMU    ?= qemu-system-x86_64
 TIMEOUT ?= timeout
 
+.DELETE_ON_ERROR:
+
 BUILD := build
+BOOT_RAM_MB ?= 16 64 320
+HOST_CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror
+HOST_LDFLAGS ?= -static
 STAGE1_SECTORS := 8
 STAGE1_BYTES := 4096
 KERNEL_LBA := 9
@@ -62,7 +67,7 @@ $(BUILD)/kernel.bin: $(BUILD)/kernel.elf
 	@test $$(wc -c < $@) -le 32768
 
 $(BUILD)/stage1.o: boot/stage1.asm $(BUILD)/kernel.bin | $(BUILD)
-	@bytes=$$(wc -c < $(BUILD)/kernel.bin); \
+	@set -eu; bytes=$$(wc -c < $(BUILD)/kernel.bin); \
 	sectors=$$(( (bytes + 511) / 512 )); \
 	test $$sectors -gt 0; test $$sectors -le 64; \
 	$(AS) --64 --defsym KERNEL_SECTORS=$$sectors $< -o $@
@@ -85,7 +90,7 @@ $(BUILD)/boot.bin: $(BUILD)/boot.o
 	@test "$$(tail -c 2 $@ | od -An -tx1 | tr -d ' \n')" = 55aa
 
 $(BUILD)/kernel.pad: $(BUILD)/kernel.bin
-	@bytes=$$(wc -c < $<); sectors=$$(( (bytes + 511) / 512 )); \
+	@set -eu; bytes=$$(wc -c < $<); sectors=$$(( (bytes + 511) / 512 )); \
 	count=$$(( sectors * 512 )); \
 	dd if=/dev/zero of=$@ bs=1 count=$$count status=none; \
 	dd if=$< of=$@ conv=notrunc status=none
@@ -120,8 +125,9 @@ $(BUILD)/m4_trace_verify.o: tests/m4_trace_verify.c | $(BUILD)
 $(BUILD)/m4_trace_verify: $(BUILD)/m4_trace_verify.o tests/host_linker.ld
 	$(LD) -m elf_x86_64 -nostdlib -T tests/host_linker.ld -o $@ $(BUILD)/m4_trace_verify.o
 
-trace-verify: $(BUILD)/hadeed.img $(BUILD)/kernel.elf $(BUILD)/m2_trace_verify
+trace-verify: $(BUILD)/hadeed.img $(BUILD)/kernel.elf $(BUILD)/m2_trace_verify $(BUILD)/m3_trace_verify
 	./$(BUILD)/m2_trace_verify
+	./$(BUILD)/m3_trace_verify
 
 static-test: $(BUILD)/hadeed.img $(BUILD)/m2_image_test
 	./$(BUILD)/m2_image_test
@@ -135,10 +141,19 @@ $(BUILD)/tensor_check.o: kernel/tensor_check.c | $(BUILD)
 m4-trace-verify: $(BUILD)/hadeed.img $(BUILD)/kernel.elf $(BUILD)/m4_trace_verify
 	./$(BUILD)/m4_trace_verify
 
-runtime-test: $(BUILD)/hadeed.img
-	QEMU="$(QEMU)" TIMEOUT="$(TIMEOUT)" sh tests/boot.sh $<
+$(BUILD)/memory_test: tests/memory_test.c kernel/memory.c kernel/memory.h | $(BUILD)
+	$(CC) $(HOST_CFLAGS) -Ikernel tests/memory_test.c kernel/memory.c $(HOST_LDFLAGS) -o $@
 
-check: static-test m4-trace-verify runtime-test
+memory-test: $(BUILD)/memory_test
+	./$(BUILD)/memory_test
+
+runtime-test: $(BUILD)/hadeed.img
+	@set -eu; test -n "$(strip $(BOOT_RAM_MB))" || { echo "Set BOOT_RAM_MB to at least one RAM size" >&2; exit 2; }; \
+	for mb in $(BOOT_RAM_MB); do \
+	  QEMU_MEMORY_MB="$$mb" QEMU="$(QEMU)" TIMEOUT="$(TIMEOUT)" sh tests/boot.sh $<; \
+	done
+
+check: static-test memory-test trace-verify m4-trace-verify runtime-test
 
 run: $(BUILD)/hadeed.img
 	sh scripts/run-qemu.sh $<
@@ -146,4 +161,4 @@ run: $(BUILD)/hadeed.img
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all trace-verify static-test m4-trace-verify runtime-test check run clean
+.PHONY: all memory-test trace-verify static-test m4-trace-verify runtime-test check run clean

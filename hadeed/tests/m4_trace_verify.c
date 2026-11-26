@@ -112,19 +112,20 @@ static void verify_buddy_layout(void)
     static const u32 expected[]={0U,65536U,98304U,114688U,122880U,126976U,129024U,130048U,130560U,130816U,130944U,131008U,131040U,131056U,131064U,131068U,131070U,131071U};
     const struct symbol offs=find_symbol("buddy_order_offsets",40L);
     const struct symbol freebm=find_symbol("buddy_free_bitmap",41L);
+    const struct symbol allocated=find_symbol("buddy_allocated_bitmap",48L);
     const struct symbol usable=find_symbol("page_usable_bitmap",42L);
     const struct symbol ptpool=find_symbol("page_table_pool",43L);
     const u8*p;usize i;
-    if(offs.size!=sizeof expected||freebm.size!=16384UL||usable.size!=8192UL||ptpool.size!=24UL*512UL*8UL)fail(44,"buddy metadata sizes mismatch");
+    if(offs.size!=sizeof expected||freebm.size!=16384UL||allocated.size!=freebm.size||usable.size!=8192UL||ptpool.size!=24UL*512UL*8UL)fail(44,"buddy metadata sizes mismatch");
     if((ptpool.value&0xfffUL)!=0UL)fail(45,"page-table pool not 4KiB aligned");
     p=flat_ptr(offs.value,sizeof expected,46L);for(i=0;i<sizeof expected/sizeof expected[0];++i)if(rd32(p+i*4UL)!=expected[i])fail(47,"buddy order offsets mismatch");
 }
 
 static void verify_allocator_symbols(void)
 {
-    const struct symbol alloc=find_symbol("page_alloc",50L);const struct symbol fre=find_symbol("page_free",51L);const struct symbol map=find_symbol("map_page_4k",52L);const struct symbol km=find_symbol("kmalloc",53L);const struct symbol kf=find_symbol("kfree",54L);const struct symbol arena=find_symbol("new_arena",55L);
+    const struct symbol alloc=find_symbol("page_alloc",50L);const struct symbol fre=find_symbol("page_free",51L);const struct symbol map=find_symbol("map_pages_4k",52L);const struct symbol km=find_symbol("kmalloc",53L);const struct symbol kf=find_symbol("kfree",54L);const struct symbol arena=find_symbol("new_arena",55L);
     if(alloc.size<16UL||fre.size<16UL||map.size<16UL||km.size<16UL||kf.size<16UL||arena.size<16UL)fail(56,"allocator function too small");
-    if(find_direct_call(arena,alloc.value,0UL)<0||find_direct_call(arena,map.value,0UL)<0)fail(57,"heap arena is not backed by buddy plus map_page_4k");
+    if(find_direct_call(arena,alloc.value,0UL)<0||find_direct_call(arena,map.value,0UL)<0)fail(57,"heap arena is not backed by buddy plus map_pages_4k");
 }
 
 static void verify_kmain_sequence(void)

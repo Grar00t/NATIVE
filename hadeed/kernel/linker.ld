@@ -7,7 +7,7 @@ SECTIONS
     .text : ALIGN(16) { KEEP(*(.text.entry)) *(.text*) } :text
     .rodata : ALIGN(16) { *(.rodata*) } :text
     .data : ALIGN(16) { *(.data*) } :data
-    .bss : ALIGN(16) { *(COMMON) *(.bss*) } :data
+    .bss (NOLOAD) : ALIGN(16) { __bss_start = .; *(COMMON) *(.bss*) } :data
     ASSERT(. <= 0x00102000, "kernel loadable sections overlap fixed IDT address")
     . = 0x00102000;
     .idt (NOLOAD) : ALIGN(16) { KEEP(*(.idt)) } :data

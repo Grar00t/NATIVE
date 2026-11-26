@@ -24,7 +24,7 @@ check-host: all
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Iengine/include -static -o build/tensor-oracle tests/tensor_oracle.c $(ENGINE_DIR)/libniyah.a -lm
 	sh tests/integration.sh
 	sh tests/assembly-models.sh
-	$(MAKE) -C hadeed static-test m4-trace-verify
+	$(MAKE) -C hadeed static-test memory-test trace-verify m4-trace-verify
 
 check-boot: hadeed
 	$(MAKE) -C hadeed runtime-test
@@ -46,7 +46,11 @@ clean:
 check-imports:
 	sh tests/check-imports.sh
 
-check-host: check-imports
+check-host: check-imports check-local-only
+
+.PHONY: check-local-only
+check-local-only:
+	sh tests/check-local-only.sh
 
 .PHONY: model retrieval
 all: model retrieval

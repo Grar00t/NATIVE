@@ -43,11 +43,19 @@ e820_next:
     cmpl $E820_SMAP, %eax
     jne e820_error
     cmpl $20, %ecx
-    jb e820_error
+    je e820_legacy
+    cmpl $E820_ENTRY_SIZE, %ecx
+    jne e820_error
+    jmp e820_store
+e820_legacy:
+    movl $1, 20(%di)
+e820_store:
+    /* The slot after the array is scratch for a final continuation call.
+       Carry there terminates a full map. A returned descriptor means overflow. */
+    cmpl $E820_MAX, E820_INFO
+    jae e820_error
     incl E820_INFO
     addw $E820_ENTRY_SIZE, %di
-    cmpl $E820_MAX, E820_INFO
-    jae e820_done
     testl %ebx, %ebx
     jne e820_next
 
@@ -88,6 +96,7 @@ e820_ready:
     movw %ax, %es
     movw $PML4_ADDR, %di
     movw $6144, %cx
+    cld
     rep stosw
 
     /* Identity-map 0..2 MiB using one 2 MiB page. */

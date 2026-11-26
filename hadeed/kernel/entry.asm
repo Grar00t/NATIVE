@@ -9,6 +9,12 @@ kernel_entry:
     cli
     movq $0x80000, %rsp
     xorq %rbp, %rbp
+    cld
+    leaq __bss_start(%rip), %rdi
+    leaq __kernel_reserved_end(%rip), %rcx
+    subq %rdi, %rcx
+    xorl %eax, %eax
+    rep stosb
     call kmain
 1:
     hlt
