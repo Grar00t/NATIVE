@@ -51,7 +51,9 @@ printf '%s\n' 'matrix' 'matrix kernel' | "$cli" batch-match manual.dalw
 
 ### Terminal progress
 
-Build `tools/think.c` with `make build/think` on Linux or `cl /std:c11 /O2 tools\think.c` on Windows. In a pipeline it copies stdin to stdout and reports the byte count on the terminal. Use `--count` to write the final count to redirected stderr. Run `--demo` in a terminal for the repeating dots. Ctrl+C ends the demo.
+Build `build/think` with `make build/think` on Linux or `tools\build-think.cmd` in a Windows x64 Visual Studio developer prompt. In a pipeline it copies stdin to stdout. Use `--count` to write the final byte count to stderr. `--demo` displays one cycle. Run `think run --help` for task mode.
+
+The [agent guide](docs/agents.md) shows how to watch a growing file, wait for the writer's completion record, and add an agent to an active run by publishing its manifest.
 
 ### Desktop search
 

@@ -90,11 +90,22 @@ build/search-bench: tests/search_bench.c $(SEARCH_SOURCES) retrieval/search/niya
 bench-search: build/search-bench
 	./build/search-bench
 
-build/think: tools/think.c Makefile
-	mkdir -p $(@D)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -static $< -o $@
+THINK_CPP = tools/agents.cpp tools/agent_connectors.cpp
+THINK_HEADERS = tools/think.h tools/agent_connectors.hpp retrieval/native/niyah_utf8.h
 
-check-host: build/think
+build/think-core.o: tools/think.c tools/think.h Makefile
+	mkdir -p $(@D)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -DTHINK_WITH_AGENTS -c $< -o $@
+
+build/think: build/think-core.o $(THINK_CPP) $(THINK_HEADERS) Makefile
+	$(CXX) -std=c++17 -O2 -Wall -Wextra -Wpedantic -Werror -static $(THINK_CPP) $< -o $@
+
+.PHONY: check-agents
+check-agents: build/think
+	sh tests/agents.sh build/think
+
+all: build/think
+check-host: check-agents
 
 .PHONY: check-ribat check-al-kimiyya
 check-components: check-ribat check-al-kimiyya

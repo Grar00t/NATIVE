@@ -9,6 +9,10 @@ link="-no-pie $flags"
 export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
 export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 
+"${CC:-cc}" -std=c11 $flags -DTHINK_WITH_AGENTS -c "$root/tools/think.c" -o "$work/think.o"
+"${CXX:-c++}" -std=c++17 $link "$root/tools/agents.cpp" "$root/tools/agent_connectors.cpp" "$work/think.o" -o "$work/think"
+sh "$root/tests/agents.sh" "$work/think"
+
 "${CC:-cc}" -std=c11 -Wall -Wextra -Wpedantic -Werror $link -I"$root/hadeed/kernel" \
     "$root/hadeed/tests/memory_test.c" "$root/hadeed/kernel/memory.c" -o "$work/guest-memory-test"
 "$work/guest-memory-test"
