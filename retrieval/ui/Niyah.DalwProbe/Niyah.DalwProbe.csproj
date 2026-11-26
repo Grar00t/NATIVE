@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Niyah.DalwProbe</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\Niyah.App\NiyahDalwNative.cs" Link="NiyahDalwNative.cs" />
+    <None Include="..\..\lowlevel\dist\niyah_dalw.dll" Link="niyah_dalw.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,52 @@
+CC ?= cc
+BIN := build
+NATIVE_FLAGS := -nostdlib -static -no-pie -Wl,--build-id=none,-z,noexecstack
+FREESTANDING := -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -fno-stack-protector -fno-tree-loop-distribute-patterns
+LANG_SRC := ../lang/src
+MORPH := src/morph_tokenizer
+IR := $(BIN)/tensor
+ASM_TOOLS := trigram attention_lm continual_lora exactcalc tile_allocator nexus_audit
+.PHONY: all clean
+.DELETE_ON_ERROR:
+all: $(addprefix $(BIN)/,$(ASM_TOOLS)) $(BIN)/tile_probe $(BIN)/morph-tokenizer $(IR)/project
+
+$(BIN) $(IR):
+	mkdir -p $@
+
+$(BIN)/%: src/%.s | $(BIN)
+	$(CC) $(NATIVE_FLAGS) -o $@ $<
+
+$(BIN)/trigram: data/corpus.txt
+$(BIN)/attention_lm: data/corpus.txt data/heldout.txt
+$(BIN)/nexus_audit: $(BIN)/exactcalc
+
+$(BIN)/tile_probe: src/tile_probe.s src/tile_kernels.s | $(BIN)
+	$(CC) $(NATIVE_FLAGS) -o $@ $^
+
+$(BIN)/morph-tokenizer: $(MORPH)/start.s $(MORPH)/tokenizer.c $(MORPH)/vocab.h $(LANG_SRC)/morph.c $(LANG_SRC)/morph.h $(LANG_SRC)/lexer.h | $(BIN)
+	$(CC) $(FREESTANDING) $(NATIVE_FLAGS) -I$(LANG_SRC) -o $@ $(MORPH)/start.s $(MORPH)/tokenizer.c $(LANG_SRC)/morph.c
+
+$(IR)/project.nir: examples/tensor_arabic.niyah ../lang/niyahc-tile | $(IR)
+	../lang/niyahc-tile --ir $< > $@
+
+$(IR)/intervals: $(IR)/project.nir
+	../lang/niyahc-tile --intervals $< > $@
+
+$(IR)/assignment: $(IR)/intervals $(BIN)/tile_allocator
+	$(BIN)/tile_allocator < $< > $@
+
+$(IR)/project.s: $(IR)/project.nir $(IR)/assignment
+	../lang/niyahc-tile --asm $^ > $@
+
+$(IR)/project: $(IR)/project.s src/tensor_runtime.s src/tensor_dispatch.s src/gemm_i8.s
+	$(CC) $(NATIVE_FLAGS) -o $@ $^
+
+clean:
+	rm -rf $(BIN)
+
+$(BIN)/i8-gemm-check: tests/i8_gemm_harness.c tests/i8_dot.s src/niyah_i8_gemm.s | $(BIN)
+	$(CC) -O2 -std=c11 -Wall -Wextra -static -Wl,-z,noexecstack -o $@ $^ -lm
+
+.PHONY: check-i8
+check-i8: $(BIN)/i8-gemm-check
+	@rc=0; $(BIN)/i8-gemm-check || rc=$$?; test $$rc -eq 0 || test $$rc -eq 77

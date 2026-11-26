@@ -1,0 +1,10 @@
+بداية القصة عن المدين والدائن.
+@chronicle	المدين	BORROWED_FROM	الدائن	100/1	SAR	اليوم الأول	ASSERTED	POSITIVE	CONFIRMED
+
+بعد صفحات كثيرة ظهر وسيط.
+@chronicle	الوسيط	INTERMEDIARY_FOR	الدائن	-	SAR	لاحقًا	ASSERTED	POSITIVE	CONFIRMED
+
+@chronicle	المدين	PAID_TO	الوسيط	40/1	SAR	اليوم الثاني	ASSERTED	POSITIVE	CONFIRMED
+
+ظهرت حوالة أخرى، لكن لم يثبت وصولها.
+@chronicle	المدين	TRANSFER_TO	الوسيط	60/1	SAR	اليوم الثالث	UNCERTAIN	POSITIVE	PENDING

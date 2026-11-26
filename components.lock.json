@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "sources": {
+    "engine": {
+      "revision": "5c4b22afb5bba099124f71021e0864a0063f4758",
+      "branch_at_import": "main",
+      "import": "CPU model, CLI, persistence, native tests and optional engine backends",
+      "repository": "Niyah.Engine"
+    },
+    "lang": {
+      "revision": "f96d8b0a3af12042af0fd7cfed2fbed6acc61579",
+      "branch_at_import": "main",
+      "import": "Scalar front end, ELF emitter, examples and regression suite",
+      "repository": "niyah-lang"
+    },
+    "asm": {
+      "revision": "97a7ff9e9749efeb28465afa9205d1d74028a98b",
+      "branch_at_import": "main",
+      "import": "Native assembly and codec sources and typed IR example",
+      "repository": "niyah-assembly-model"
+    },
+    "hadeed": {
+      "revision": "264993262e5115f6eabe29c7730af60b55a9b238",
+      "branch_at_import": "main",
+      "import": "BIOS boot stages, kernel, allocation tests and host verifiers",
+      "repository": "hadeed-os"
+    },
+    "tensor": {
+      "revision": "21273281979c1397c1f66a52431a1b4c9c9027ed",
+      "branch_at_import": "feat/tensor-backend-integrated",
+      "import": "Fixed-shape tensor emitter, ABI checks and build rules",
+      "repository": "niyah-lang"
+    },
+    "exact": {
+      "revision": "4183d531251410eb4698ad6aa21ac5cbea1a4257",
+      "branch_at_import": "feat/exact-rational-engine-20261015",
+      "import": "Exact rational calculator source missing from main",
+      "repository": "niyah-assembly-model"
+    },
+    "model": {
+      "revision": "c7b839bc19c721254a813c7ce721cde6a48127a2",
+      "import": "C model runtime, training, GGUF reader, tokenizer, proof and query tools"
+    },
+    "retrieval": {
+      "revision": "58221a799ed12a11c114ee27185909a381eacdc5",
+      "import": "Native search index, query APIs and desktop client"
+    },
+    "arithmetic": {
+      "revision": "5c4be9443680615743011a5541f624ecda82fb1c",
+      "import": "Exact arithmetic evaluator and regression cases"
+    },
+    "i8": {
+      "revision": "cbeb5f6c48b272adb26449e95f5f7c173c80e43d",
+      "import": "Blocked int8 matrix multiply and native comparison tests"
+    }
+  },
+  "scope": {
+    "fixtures": "The small text corpora under asm/data are test inputs. Weights and generated indexes are built or supplied locally."
+  }
+}

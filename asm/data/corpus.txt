@@ -1,0 +1,3 @@
+Read two signed tiles. Keep each byte in row order.
+Read the left tile. Read the right tile. Multiply each row by each column.
+Write the signed sums. Check every column. Finish the row.

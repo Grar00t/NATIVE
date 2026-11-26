@@ -1,0 +1,5 @@
+reserve 1;
+input_a يسار;
+input_b يمين;
+gemm نتيجة = يسار * يمين;
+emit نتيجة;

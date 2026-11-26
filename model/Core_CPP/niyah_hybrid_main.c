@@ -1,0 +1,691 @@
+/*
+ * niyah_hybrid_main.c — NIYAH Hybrid Neuro-Symbolic CLI
+ */
+
+#include "niyah_core.h"
+#include "niyah_gguf_map.h"
+#include "rule_parser.h"
+#include "rule_source_guard.h"
+#include "proof_generator.h"
+#include "khz_q_svd.h"
+#include "casper_rag.h"
+#include "tokenizer.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <time.h>
+#include <float.h>
+
+#define AUDIT_INPUT_MAX      (64u * 1024u)
+#define AUDIT_RULE_FILE_MAX  (1024u * 1024u)
+
+int niyah_sym_smoke(void);
+int niyah_csp_smoke(void);
+int niyah_rule_smoke(void);
+int niyah_proof_smoke(void);
+
+static void json_print_string(FILE *fp, const char *s)
+{
+    const unsigned char *p = (const unsigned char *)(s ? s : "");
+    fputc('"', fp);
+    while (*p) {
+        switch (*p) {
+        case '"': fputs("\\\"", fp); break;
+        case '\\': fputs("\\\\", fp); break;
+        case '\b': fputs("\\b", fp); break;
+        case '\f': fputs("\\f", fp); break;
+        case '\n': fputs("\\n", fp); break;
+        case '\r': fputs("\\r", fp); break;
+        case '\t': fputs("\\t", fp); break;
+        default:
+            if (*p < 0x20u) fprintf(fp, "\\u%04x", (unsigned)*p);
+            else fputc(*p, fp);
+            break;
+        }
+        ++p;
+    }
+    fputc('"', fp);
+}
+
+static char *read_stream_all(FILE *fp, size_t max_bytes)
+{
+    size_t cap = 4096u, len = 0u;
+    char *buf;
+    if (!fp || max_bytes == 0u) return NULL;
+    if (cap > max_bytes + 1u) cap = max_bytes + 1u;
+    buf = (char *)malloc(cap);
+    if (!buf) return NULL;
+    while (!feof(fp)) {
+        size_t room;
+        size_t got;
+        if (len >= max_bytes) { free(buf); return NULL; }
+        if (len + 1u >= cap) {
+            size_t next = cap * 2u;
+            char *grown;
+            if (next > max_bytes + 1u) next = max_bytes + 1u;
+            if (next <= cap) { free(buf); return NULL; }
+            grown = (char *)realloc(buf, next);
+            if (!grown) { free(buf); return NULL; }
+            buf = grown;
+            cap = next;
+        }
+        room = cap - len - 1u;
+        got = fread(buf + len, 1u, room, fp);
+        len += got;
+        if (ferror(fp)) { free(buf); return NULL; }
+        if (got == 0u && !feof(fp)) { free(buf); return NULL; }
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static char *read_text_file_bounded(const char *path, size_t max_bytes)
+{
+    FILE *fp;
+    char *text;
+    if (!path || !path[0]) return NULL;
+    fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    text = read_stream_all(fp, max_bytes);
+    if (fclose(fp) != 0) { free(text); return NULL; }
+    return text;
+}
+
+static int json_hex_value(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int json_u16(const char *p, uint32_t *out)
+{
+    uint32_t v = 0u;
+    int i;
+    if (!p || !out) return 0;
+    for (i = 0; i < 4; ++i) {
+        int h;
+        if (p[i] == '\0') return 0;
+        h = json_hex_value(p[i]);
+        if (h < 0) return 0;
+        v = (v << 4) | (uint32_t)h;
+    }
+    *out = v;
+    return 1;
+}
+
+static size_t utf8_write(char *out, uint32_t cp)
+{
+    if (cp <= 0x7Fu) { out[0] = (char)cp; return 1u; }
+    if (cp <= 0x7FFu) {
+        out[0] = (char)(0xC0u | (cp >> 6));
+        out[1] = (char)(0x80u | (cp & 0x3Fu));
+        return 2u;
+    }
+    if (cp <= 0xFFFFu) {
+        out[0] = (char)(0xE0u | (cp >> 12));
+        out[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+        out[2] = (char)(0x80u | (cp & 0x3Fu));
+        return 3u;
+    }
+    if (cp <= 0x10FFFFu) {
+        out[0] = (char)(0xF0u | (cp >> 18));
+        out[1] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+        out[2] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+        out[3] = (char)(0x80u | (cp & 0x3Fu));
+        return 4u;
+    }
+    return 0u;
+}
+
+static char *json_extract_string(const char *json, const char *key)
+{
+    char needle[96];
+    const char *p;
+    char *out;
+    size_t cap;
+    size_t n = 0u;
+    int nn;
+    if (!json || !key) return NULL;
+    nn = snprintf(needle, sizeof(needle), "\"%s\"", key);
+    if (nn < 0 || (size_t)nn >= sizeof(needle)) return NULL;
+    p = strstr(json, needle);
+    if (!p) return NULL;
+    p += (size_t)nn;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p++ != ':') return NULL;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+    if (*p++ != '"') return NULL;
+    cap = strlen(p) + 1u;
+    out = (char *)malloc(cap);
+    if (!out) return NULL;
+    while (*p && *p != '"') {
+        if (*p != '\\') {
+            out[n++] = *p++;
+            continue;
+        }
+        ++p;
+        if (!*p) { free(out); return NULL; }
+        switch (*p) {
+        case '"': out[n++] = '"'; ++p; break;
+        case '\\': out[n++] = '\\'; ++p; break;
+        case '/': out[n++] = '/'; ++p; break;
+        case 'b': out[n++] = '\b'; ++p; break;
+        case 'f': out[n++] = '\f'; ++p; break;
+        case 'n': out[n++] = '\n'; ++p; break;
+        case 'r': out[n++] = '\r'; ++p; break;
+        case 't': out[n++] = '\t'; ++p; break;
+        case 'u': {
+            uint32_t cp;
+            size_t wrote;
+            ++p;
+            if (!json_u16(p, &cp)) { free(out); return NULL; }
+            p += 4;
+            if (cp >= 0xD800u && cp <= 0xDBFFu && p[0] == '\\' && p[1] == 'u') {
+                uint32_t low;
+                if (!json_u16(p + 2, &low) || low < 0xDC00u || low > 0xDFFFu) { free(out); return NULL; }
+                cp = 0x10000u + ((cp - 0xD800u) << 10) + (low - 0xDC00u);
+                p += 6;
+            } else if (cp >= 0xD800u && cp <= 0xDFFFu) {
+                free(out);
+                return NULL;
+            }
+            wrote = utf8_write(out + n, cp);
+            if (wrote == 0u) { free(out); return NULL; }
+            n += wrote;
+            break;
+        }
+        default: free(out); return NULL;
+        }
+    }
+    if (*p != '"') { free(out); return NULL; }
+    out[n] = '\0';
+    return out;
+}
+
+static uint32_t elapsed_clock_ms(clock_t start)
+{
+    clock_t delta = clock() - start;
+    if (delta <= 0) return 0u;
+    return (uint32_t)(((double)delta * 1000.0) / (double)CLOCKS_PER_SEC);
+}
+
+static int audit_stdin(void)
+{
+    clock_t start = clock();
+    char *payload = read_stream_all(stdin, AUDIT_INPUT_MAX);
+    char *prompt = NULL;
+    char *text = NULL;
+    char *rules_path = NULL;
+    char *rules_text = NULL;
+    NiyahRuleKB *kb = NULL;
+    const char *violation = NULL;
+    KHZQ_Result khz;
+    uint8_t proof[32], rules_hash[32];
+    const uint8_t *rules_hash_ptr = NULL;
+    char proof_hex[65], rules_hex[65];
+    bool rules_bound = false;
+    bool khz_pass = false;
+    bool rules_pass = false;
+    bool receipt_created = false;
+    bool local_gate_verified = false;
+    const char *error = NULL;
+
+    if (!payload) error = "invalid or oversized stdin payload";
+    if (!error) prompt = json_extract_string(payload, "prompt");
+    if (!error) text = json_extract_string(payload, "text");
+    if (!error) rules_path = json_extract_string(payload, "rules");
+    if (!error && (!prompt || !text || !rules_path)) error = "payload must contain string fields prompt, text, and rules";
+
+    if (!error && rules_path[0]) {
+        rules_text = read_text_file_bounded(rules_path, AUDIT_RULE_FILE_MAX);
+        if (!rules_text || !niyah_sha256_file(rules_path, rules_hash)) {
+            error = "rules file unreadable, too large, or unhashable";
+        }
+        if (!error) {
+            kb = niyah_rule_parse(rules_text);
+            if (!kb || !niyah_rule_source_guard(rules_text, kb)) {
+                error = "rules file is empty, malformed, or only partially parsed";
+            } else {
+                rules_bound = true;
+                rules_hash_ptr = rules_hash;
+            }
+        }
+    }
+
+    memset(&khz, 0, sizeof(khz));
+    if (!error) {
+        khz = khz_q_verify_output(text, 0.85f);
+        khz_pass = khz.is_coherent;
+        if (kb) violation = niyah_rule_check(kb, prompt, text);
+        rules_pass = (violation == NULL);
+        if(niyah_proof_generate_v1(prompt, text, rules_bound ? rules_path : NULL, proof) != 0) {
+            memset(proof, 0, sizeof proof);
+            error = "V1 digest generation failed";
+        } else {
+            receipt_created = true;
+        }
+        if (!rules_hash_ptr) niyah_sha256((const uint8_t *)"", 0u, rules_hash);
+        niyah_hash_to_hex(proof, proof_hex);
+        niyah_hash_to_hex(rules_hash, rules_hex);
+        local_gate_verified = khz_pass && rules_pass && receipt_created;
+    } else {
+        memset(proof_hex, '0', 64u); proof_hex[64] = '\0';
+        memset(rules_hex, '0', 64u); rules_hex[64] = '\0';
+    }
+
+    printf("{");
+    printf("\"verified\":%s", local_gate_verified ? "true" : "false");
+    printf(",\"local_gate_verified\":%s", local_gate_verified ? "true" : "false");
+    printf(",\"khz_pass\":%s", khz_pass ? "true" : "false");
+    printf(",\"rules_pass\":%s", rules_pass ? "true" : "false");
+    printf(",\"receipt_created\":%s", receipt_created ? "true" : "false");
+    printf(",\"receipt_verified\":false");
+    printf(",\"verification_scope\":\"khz_q_heuristic+text_rules\"");
+    printf(",\"factual_truth_verified\":false");
+    printf(",\"chain_hash\":\"%s\"", proof_hex);
+    printf(",\"proof_kind\":\"NIYAH-PROOF-V1\"");
+    printf(",\"rules_bound\":%s", rules_bound ? "true" : "false");
+    printf(",\"rules_hash\":\"%s\"", rules_hex);
+    printf(",\"confidence\":%.6f", local_gate_verified ? (double)khz.energy_preserved : 0.0);
+    printf(",\"khz_energy\":%.6f", (double)khz.energy_preserved);
+    printf(",\"khz_penalty\":%.6f", (double)khz.penalty_nasl);
+    printf(",\"rule_violation\":");
+    if (violation) json_print_string(stdout, violation); else fputs("null", stdout);
+    printf(",\"error\":");
+    if (error) json_print_string(stdout, error); else fputs("null", stdout);
+    printf(",\"elapsed_ms\":%u}\n", elapsed_clock_ms(start));
+
+    if (kb) niyah_rule_free(kb);
+    free(rules_text);
+    free(rules_path);
+    free(text);
+    free(prompt);
+    free(payload);
+    return 0;
+}
+
+static uint32_t generate_tokens(NiyahModel *m, const uint32_t *prompt_tokens,
+                                uint32_t prompt_len, uint32_t *out_tokens,
+                                uint32_t max_out, NiyahSampler *sampler)
+{
+    if (!m || !prompt_tokens || !out_tokens || !sampler || m->cfg.vocab_size == 0u) return 0u;
+    const uint32_t ctx = m->cfg.ctx_len;
+    if (ctx == 0u || prompt_len == 0u || prompt_len > ctx) return 0u;
+
+    uint32_t pos = 0u;
+    float *logits = NULL;
+    for (uint32_t i = 0u; i < prompt_len; ++i) {
+        const uint32_t tok = prompt_tokens[i];
+        if (tok >= m->cfg.vocab_size || pos >= ctx) return 0u;
+        logits = niyah_forward(m, tok, pos++);
+        if (!logits) return 0u;
+    }
+
+    uint32_t n_out = 0u;
+    while (logits && n_out < max_out && pos < ctx) {
+        for (uint32_t id = 0u; id < m->cfg.vocab_size; ++id) {
+            if (!tokenizer_token_allowed_for_generation(id)) logits[id] = -FLT_MAX;
+        }
+
+        const uint32_t tok = niyah_sample_with_workspace(logits, m->cfg.vocab_size,
+                                                         sampler, m->_sampler_workspace,
+                                                         m->_sampler_workspace_bytes);
+        if (tok >= m->cfg.vocab_size) return 0u;
+        if (tok == TOK_EOS) break;
+
+        out_tokens[n_out++] = tok;
+        if (n_out >= max_out || pos >= ctx) break;
+
+        logits = niyah_forward(m, tok, pos++);
+    }
+    return n_out;
+}
+
+char *niyah_hybrid_generate(NiyahModel *m, const char *prompt,
+                            const NiyahHybridOpts *opts,
+                            NiyahSampler *sampler,
+                            uint8_t proof_out[32])
+{
+    static const char sft_prefix[] = "Instruction:\n";
+    static const char sft_suffix[] = "\nResponse:\n";
+
+    if (!m || !prompt || !sampler || m->cfg.vocab_size == 0u || m->cfg.ctx_len == 0u) return NULL;
+
+    tokenizer_init();
+    const uint32_t tokenizer_vocab = tokenizer_vocab_size();
+    if (m->cfg.vocab_size != tokenizer_vocab) {
+        (void)fprintf(stderr,
+                      "[niyah] tokenizer/model vocabulary mismatch: model=%u tokenizer=%u\n",
+                      m->cfg.vocab_size, tokenizer_vocab);
+        tokenizer_free();
+        return NULL;
+    }
+
+    const uint32_t ctx = m->cfg.ctx_len;
+    uint32_t *prompt_tokens = (uint32_t *)calloc((size_t)ctx, sizeof(*prompt_tokens));
+    uint32_t *out_tokens = (uint32_t *)calloc((size_t)ctx, sizeof(*out_tokens));
+    if (!prompt_tokens || !out_tokens) {
+        free(prompt_tokens);
+        free(out_tokens);
+        tokenizer_free();
+        return NULL;
+    }
+
+    const size_t prefix_len = sizeof(sft_prefix) - 1u;
+    const size_t suffix_len = sizeof(sft_suffix) - 1u;
+    const size_t raw_len = strlen(prompt);
+    if (raw_len > SIZE_MAX - prefix_len - suffix_len - 1u) {
+        free(prompt_tokens);
+        free(out_tokens);
+        tokenizer_free();
+        return NULL;
+    }
+    const size_t sft_len = prefix_len + raw_len + suffix_len;
+    char *sft_prompt = (char *)malloc(sft_len + 1u);
+    if (!sft_prompt) {
+        free(prompt_tokens);
+        free(out_tokens);
+        tokenizer_free();
+        return NULL;
+    }
+    memcpy(sft_prompt, sft_prefix, prefix_len);
+    memcpy(sft_prompt + prefix_len, prompt, raw_len);
+    memcpy(sft_prompt + prefix_len + raw_len, sft_suffix, suffix_len);
+    sft_prompt[sft_len] = '\0';
+
+    uint32_t prompt_len = tokenizer_encode(sft_prompt, prompt_tokens, ctx);
+    free(sft_prompt);
+    if (prompt_len > 0u && prompt_tokens[prompt_len - 1u] == TOK_EOS) {
+        --prompt_len;
+    }
+    if (prompt_len == 0u || prompt_len >= ctx) {
+        free(prompt_tokens);
+        free(out_tokens);
+        tokenizer_free();
+        return NULL;
+    }
+
+    const uint32_t max_retries = (opts && opts->max_retries > 0u) ? opts->max_retries : 3u;
+    NiyahRuleKB *rules = opts ? (NiyahRuleKB *)opts->rules : NULL;
+    const bool generate_proof = opts ? opts->generate_proof : false;
+    const uint32_t max_out = ctx - prompt_len;
+    char *result = NULL;
+
+    for (uint32_t attempt = 0u; attempt <= max_retries; ++attempt) {
+        if (attempt > 0u) sampler->seed += UINT64_C(12345) * attempt;
+        const uint32_t n_out = generate_tokens(m, prompt_tokens, prompt_len,
+                                               out_tokens, max_out, sampler);
+        char *text = tokenizer_decode(out_tokens, n_out);
+        if (!text) continue;
+
+        KHZQ_Result khz = khz_q_verify_output(text, 0.85f);
+        if (!khz.is_coherent) {
+            tokenizer_free_string(text);
+            continue;
+        }
+
+        if (!rules) {
+            result = text;
+            break;
+        }
+        const char *violation = niyah_rule_check(rules, prompt, text);
+        if (!violation) {
+            result = text;
+            break;
+        }
+
+        if (attempt == max_retries) {
+            if (strcmp(violation, "REJECTED") == 0) {
+                tokenizer_free_string(text);
+                result = (char *)malloc(64u);
+                if (result) (void)snprintf(result, 64u, "[Output rejected by rules]");
+            } else {
+                const size_t len = strlen(violation) + 1u;
+                char *replacement = (char *)malloc(len);
+                if (replacement) memcpy(replacement, violation, len);
+                tokenizer_free_string(text);
+                result = replacement;
+            }
+            break;
+        }
+        tokenizer_free_string(text);
+    }
+
+    if (!result) {
+        result = (char *)malloc(32u);
+        if (result) (void)snprintf(result, 32u, "[Output rejected]");
+    }
+
+    if (proof_out) memset(proof_out, 0, 32u);
+    if (proof_out && generate_proof && result && !rules &&
+        niyah_proof_generate_v1(prompt, result, NULL, proof_out) != 0)
+        memset(proof_out, 0, 32u);
+
+    free(prompt_tokens);
+    free(out_tokens);
+    tokenizer_free();
+    return result;
+}
+
+static int run_all_smoke(void) {
+    int total_fail = 0;
+    total_fail += niyah_sym_smoke();
+    total_fail += niyah_csp_smoke();
+    total_fail += niyah_rule_smoke();
+    total_fail += niyah_proof_smoke();
+    total_fail += niyah_gguf_map_smoke();
+    total_fail += niyah_gguf_quant_smoke();
+    {
+        int pass = 0, fail = 0;
+#define KHZQ_PASS(cond, label) do { if (cond) { ++pass; } else { ++fail; (void)fprintf(stderr, "[FAIL] %s\n", label); } } while (0)
+        KHZQ_Result r1 = khz_q_verify_output("bismillah bismillah bismillah bismillah", 0.85f);
+        KHZQ_PASS(r1.energy_preserved >= 0.85f, "coherent text energy");
+        KHZQ_Result r2 = khz_q_verify_output("", 0.85f);
+        KHZQ_PASS(!r2.is_coherent, "empty text rejected");
+        KHZQ_Result r3 = khz_q_verify_output("test", 1.5f);
+        KHZQ_PASS(r3.chi_e > 0 && r3.chi_e <= KHZ_MAX_N, "chi_e range");
+        KHZQ_Result r4 = khz_q_verify_output("\xd8\xa8\xd8\xb3\xd9\x85 \xd8\xa7\xd9\x84\xd9\x84\xd9\x87", 0.80f);
+        KHZQ_PASS(r4.chi_e >= 1, "Arabic UTF-8");
+        total_fail += fail;
+#undef KHZQ_PASS
+        (void)pass;
+    }
+    {
+        tokenizer_init();
+        const uint32_t live_vocab = tokenizer_vocab_size();
+        tokenizer_free();
+        NiyahConfig cfg = {.magic=NIYAH_MAGIC,.version=NIYAH_VER,.embed_dim=64,.n_heads=4,.n_kv_heads=4,.n_layers=2,.ffn_mult=4,.vocab_size=live_vocab,.ctx_len=32,.rope_theta=10000.f,.rms_eps=1e-5f};
+        NiyahModel *m = niyah_alloc(&cfg);
+        if (!m) ++total_fail;
+        else {
+            {
+                const float probe[5] = {3.0f, 1.0f, -1.0f, 0.25f, 0.0f};
+                NiyahSampler original = {.temperature=0.8f,.top_p=0.9f,.seed=42};
+                NiyahSampler pooled = original;
+                const uintptr_t start = (uintptr_t)m->_pool;
+                const uintptr_t end = start + m->_pool_bytes;
+                const uintptr_t ws = (uintptr_t)m->_sampler_workspace;
+                if (ws < start || ws > end ||
+                    m->_sampler_workspace_bytes > end - ws ||
+                    m->_sampler_workspace_bytes < niyah_sample_workspace_bytes(m->cfg.vocab_size))
+                    ++total_fail;
+                for (unsigned j = 0u; j < 64u; ++j) {
+                    const uint32_t a = niyah_sample(probe, 5u, &original);
+                    const uint32_t b = niyah_sample_with_workspace(probe, 5u, &pooled,
+                                            m->_sampler_workspace, m->_sampler_workspace_bytes);
+                    if (a != b || original.seed != pooled.seed) { ++total_fail; break; }
+                }
+            }
+            float *wp = (float *)m->_pool;
+            size_t nw = niyah_param_count(m);
+            for (size_t i=0;i<nw;++i) wp[i]=((float)(i%37)-18.f)*0.005f;
+            for (uint32_t l=0;l<cfg.n_layers;++l) for (uint32_t j=0;j<cfg.embed_dim;++j) { m->layers[l].rms_att[j]=1.f; m->layers[l].rms_ffn[j]=1.f; }
+            for (uint32_t j=0;j<cfg.embed_dim;++j) m->rms_final[j]=1.f;
+            NiyahSampler s={.temperature=0.8f,.top_p=0.9f,.seed=42};
+            NiyahHybridOpts opts={.rules=NULL,.max_retries=0,.generate_proof=false};
+            char *out=niyah_hybrid_generate(m,"hello",&opts,&s,NULL); if(!out) ++total_fail; free(out);
+            niyah_free(m);
+        }
+    }
+    return total_fail;
+}
+
+static void rag_loop(RagBackend backend, NiyahRuleKB *rules) {
+    char line[2048];
+    while (1) {
+        (void)printf("[RAG] > "); (void)fflush(stdout);
+        if (!fgets(line,sizeof(line),stdin)) break;
+        size_t len=strlen(line); while(len && (line[len-1]=='\n'||line[len-1]=='\r')) line[--len]='\0';
+        if (!len) continue;
+        if (!strcmp(line,"quit") || !strcmp(line,"exit")) break;
+        RagCtx *ctx=casper_rag_query(line,backend,NULL);
+        if (!ctx) { (void)printf("[RAG] query failed\n"); continue; }
+        (void)printf("sources=%d confidence=%.3f elapsed=%u\n",ctx->n_results,(double)ctx->confidence,ctx->elapsed_ms);
+        for(int i=0;i<ctx->n_results;++i) (void)printf("[%d] %s\n    %s\n",i+1,ctx->results[i].title,ctx->results[i].url);
+        if(rules && ctx->context[0]) { const char *v=niyah_rule_check(rules,line,ctx->context); if(v) (void)printf("rule=%s\n",v); }
+        casper_rag_free(ctx);
+    }
+}
+
+/*
+ * Each emitted response receives a self-contained V1 integrity receipt.
+ * Filenames are allocated monotonically without intentionally overwriting
+ * an earlier session's receipts. Nothing is printed as a response if the
+ * receipt cannot be saved and read back successfully.
+ */
+static int save_response_proof(const char *prompt, const char *response, char path[64]) {
+    static unsigned sequence=0u;
+    uint8_t proof[32];
+    bool rules_bound=false, rules_verified=false;
+    for(unsigned i=0u;i<1000000u;i++){
+        FILE *existing;
+        ++sequence;
+        if(sequence>999999u)sequence=1u;
+        if(snprintf(path,64u,"casper-response-%06u.proof",sequence)<0)return -1;
+        existing=fopen(path,"rb");
+        if(existing){(void)fclose(existing);continue;}
+        if(niyah_proof_generate_v1(prompt,response,NULL,proof)!=0)return -1;
+        if(niyah_proof_save_v1(path,proof,prompt,response,NULL)!=0)return -1;
+        if(!niyah_proof_verify_saved_v1(path,NULL,&rules_bound,&rules_verified)||
+           rules_bound||!rules_verified){(void)remove(path);return -1;}
+        return 0;
+    }
+    return -1;
+}
+
+static int interactive_loop(NiyahModel *m, NiyahRuleKB *rules) {
+    NiyahSampler sampler={.temperature=0.8f,.top_p=0.9f,.seed=12345};
+    NiyahHybridOpts opts={.rules=rules,.max_retries=3,.generate_proof=false};
+    char line[4096];
+    if(rules){(void)fprintf(stderr,"[niyah] rule material unavailable: refusing unbound receipts\n");return 2;}
+    while(1){
+        char proof_path[64];
+        (void)printf("> "); (void)fflush(stdout);
+        if(!fgets(line,sizeof(line),stdin))break;
+        size_t len=strlen(line); while(len&&(line[len-1]=='\n'||line[len-1]=='\r'))line[--len]='\0';
+        if(!len) continue;
+        if(!strcmp(line,"quit")||!strcmp(line,"exit")) break;
+        char *response=niyah_hybrid_generate(m,line,&opts,&sampler,NULL);
+        if(!response){(void)fprintf(stderr,"[niyah] generation failed\n");return 1;}
+        if(save_response_proof(line,response,proof_path)!=0){
+            (void)fprintf(stderr,"[niyah] receipt write/verification failed; response withheld\n");
+            free(response);return 2;
+        }
+        (void)printf("%s\n[proof: %s]\n",response,proof_path);
+        free(response);
+        sampler.seed+=7919u;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if(argc<2){
+        (void)fprintf(stderr,"usage: %s --smoke | --audit-stdin | --verify-proof <proof> [rules-file] | --inspect-gguf <file> | --gguf-forward <file> <token> [token...] | --rag | --interactive <model.bin> | --model <model.bin>\n",argv[0]);
+        return 3;
+    }
+    if(!strcmp(argv[1],"--smoke"))return run_all_smoke();
+    if(!strcmp(argv[1],"--audit-stdin"))return audit_stdin();
+    if(!strcmp(argv[1],"--inspect-gguf")){
+        NiyahGGUFMap mapped={0};
+        int rc;
+        if(argc!=3)return 3;
+        rc=niyah_gguf_map_open(&mapped,argv[2]);
+        if(rc!=0){
+            (void)fprintf(stderr,"[gguf] mapping/header rejected (%d)\n",rc);
+            return 2;
+        }
+        (void)printf("GGUF version=%u tensors=%llu metadata=%llu bytes=%llu mode=inspect-only\n",
+                     mapped.version,(unsigned long long)mapped.tensor_count,
+                     (unsigned long long)mapped.metadata_count,
+                     (unsigned long long)mapped.file_size);
+        niyah_gguf_map_close(&mapped);
+        return 0;
+    }
+    if(!strcmp(argv[1],"--verify-proof")){
+        bool bound=false, verified=false;
+        if(argc<3||argc>4)return 3;
+        if(!niyah_proof_verify_saved(argv[2],argc==4?argv[3]:NULL,&bound,&verified)){
+            (void)fprintf(stderr,"[proof] receipt invalid\n");
+            return 2;
+        }
+        if(!verified){
+            (void)fprintf(stderr,"[proof] rules hash not verified: supply the original rule file\n");
+            return 2;
+        }
+        (void)printf("receipt_integrity=verified rules_bound=%s factual_truth_verified=false\n",bound?"true":"false");
+        return 0;
+    }
+    if(!strcmp(argv[1],"--gguf-forward")){
+        NiyahGGUFRunner *m = NULL;
+        float *logits = NULL;
+        uint32_t vocab, chosen = 0u;
+        int rc;
+        if (argc < 4 || argc - 3 > (int)NIYAH_MAX_CTX) return 3;
+        rc = niyah_gguf_runner_open(&m, argv[2], (uint32_t)(argc - 3));
+        if (rc != 0 || !m) {
+            (void)fprintf(stderr, "[gguf] unsupported or corrupt GGUF (%d)\n", rc);
+            return 2;
+        }
+        vocab = niyah_gguf_runner_vocab_size(m);
+        for (int j = 3; j < argc; ++j) {
+            char *end = NULL;
+            unsigned long long t = strtoull(argv[j], &end, 10);
+            if (!argv[j][0] || !end || *end != '\0' || t >= vocab) {
+                (void)fprintf(stderr, "[gguf] invalid token: %s\n", argv[j]);
+                niyah_gguf_runner_close(m);
+                return 3;
+            }
+            logits = niyah_gguf_runner_step(m, (uint32_t)t, (uint32_t)(j - 3));
+            if (!logits) {
+                (void)fprintf(stderr, "[gguf] forward pass failed at pos=%d\n", j-3);
+                niyah_gguf_runner_close(m);
+                return 2;
+            }
+        }
+        for (uint32_t j = 1u; j < vocab; ++j)
+            if (logits[j] > logits[chosen]) chosen = j;
+        (void)printf("gguf_forward=ok vocab=%u tokens=%d argmax=%u\n",
+                     vocab, argc - 3, chosen);
+        for (uint32_t j = 0u; j < vocab && j < 8u; ++j)
+            (void)printf("logit[%u]=%.9g\n", j, (double)logits[j]);
+        niyah_gguf_runner_close(m);
+        return 0;
+    }
+    if(!strcmp(argv[1],"--rag")){rag_loop(RAG_BACKEND_SEARXNG,NULL);return 0;}
+    if(!strcmp(argv[1],"--model")||!strcmp(argv[1],"--interactive")){
+        NiyahModel *m=NULL;
+        int rc;
+        if(argc!=3){(void)fprintf(stderr,"[niyah] an actual native .bin model path is required\n");return 3;}
+        rc=niyah_load(&m,argv[2]);
+        if(rc!=0||!m){(void)fprintf(stderr,"[niyah] model load failed (code %d)\n",rc);return 1;}
+        rc=interactive_loop(m,NULL);
+        niyah_free(m);
+        return rc;
+    }
+    return 3;
+}

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultApplicationDefinition>true</EnableDefaultApplicationDefinition>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>Niyah.App</AssemblyName>
+    <RootNamespace>Niyah.App</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup Condition="Exists('..\..\lowlevel\dist\niyah_dalw.dll')">
+    <None Include="..\..\lowlevel\dist\niyah_dalw.dll" Link="niyah_dalw.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
