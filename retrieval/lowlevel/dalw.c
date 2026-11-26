@@ -1,7 +1,7 @@
 /* dalw.c v2: tokenizer + Arabic light stemmer, posting lists (+tf), shard builder/reader,
    AND query, BM25 top-k, receipts. C11, little-endian. */
 #define _POSIX_C_SOURCE 200809L
-#include "dalw.h"
+#include "dalw_analysis.h"
 #include "../native/niyah_utf8.h"
 #include <limits.h>
 #include <math.h>
@@ -641,6 +641,13 @@ int dalw_doc(const DalwShard *s, uint32_t id, DalwDoc *d) {
 
 typedef struct { const uint8_t *dp, *tp; uint32_t df, dbytes, tbytes; } QTerm;
 
+static int read_term(const DalwShard *s, const uint8_t *e, QTerm *q) {
+    uint64_t off = rd64(e + 8);
+    q->df = rd32(e + 16); q->dbytes = rd32(e + 20); q->tbytes = rd32(e + 24);
+    if (q->df == 0 || q->df > s->ndocs || !in_range(off, (uint64_t)q->dbytes + q->tbytes, s->post_sz)) return -1;
+    q->dp = s->post + off; q->tp = q->dp + q->dbytes; return 1;
+}
+
 static int find_term(const DalwShard *s, uint64_t h, QTerm *q) {
     uint32_t lo = 0, hi = s->nterms;
     while (lo < hi) {
@@ -650,11 +657,16 @@ static int find_term(const DalwShard *s, uint64_t h, QTerm *q) {
     if (lo >= s->nterms) return 0;
     const uint8_t *e = s->terms + (size_t)lo * TERM_SZ;
     if (rd64(e) != h) return 0;
-    uint64_t off = rd64(e + 8);
-    q->df = rd32(e + 16); q->dbytes = rd32(e + 20); q->tbytes = rd32(e + 24);
-    if (q->df == 0 || q->df > s->ndocs || !in_range(off, (uint64_t)q->dbytes + q->tbytes, s->post_sz)) return -1;
-    q->dp = s->post + off; q->tp = q->dp + q->dbytes; return 1;
+    return read_term(s, e, q);
 }
+
+int dalw_document_frequency(const DalwShard *s, uint64_t term, uint32_t *df) {
+    QTerm q;
+    int found = find_term(s, term, &q);
+    *df = found > 0 ? q.df : 0;
+    return found;
+}
+
 
 /* Postings are sorted. Checking the last ID bounds the entire decoded list. */
 static int load_postings(const DalwShard *s, const QTerm *term, uint32_t *out) {
@@ -775,6 +787,26 @@ static int next_block(PostingCursor *c, uint32_t ndocs) {
         (c->block && c->docs[0] <= previous) || c->docs[c->count - 1] >= ndocs ||
         decode_tf_block(t->tp, t->tbytes, &c->tf_offset, c->count, c->tf) < 0) return -1;
     ++c->block;
+    return 0;
+}
+
+int dalw_walk_postings(const DalwShard *s, DalwPostingBlock visit, void *context) {
+    uint64_t previous = 0;
+    for (uint32_t i = 0; i < s->nterms; ++i) {
+        const uint8_t *entry = s->terms + (size_t)i * TERM_SZ;
+        uint64_t hash = rd64(entry);
+        QTerm term;
+        if ((i && hash <= previous) || read_term(s, entry, &term) < 0) return -1;
+        previous = hash;
+        PostingCursor cursor = {.term = &term};
+        for (;;) {
+            if (next_block(&cursor, s->ndocs) < 0) return -1;
+            if (!cursor.count) break;
+            if (visit(hash, term.df, cursor.docs, cursor.tf, cursor.count, context) != 0)
+                return -1;
+        }
+        if (cursor.tf_offset != term.tbytes) return -1;
+    }
     return 0;
 }
 
@@ -948,24 +980,41 @@ static void hex_bytes(char *o, const uint8_t *p, size_t n) {
     o[2*n] = 0;
 }
 
-/* Find the last block starting at or before doc, then inspect at most 128 IDs. */
-static int term_contains(const DalwShard *s, uint64_t hash, uint32_t doc) {
+/* The candidate IDs are sorted. Decode a posting block only when a candidate enters it. */
+int dalw_refine_docs(const DalwShard *s, uint64_t hash, uint32_t *docs, size_t *count) {
     QTerm t;
     int found = find_term(s, hash, &t);
-    if (found <= 0) return found;
-    size_t lo = 0, hi = block_count(t.df);
-    if (t.dbytes < hi * 8) return -1;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (rd32(t.dp + mid * 8) <= doc) lo = mid + 1;
-        else hi = mid;
+    if (found < 0) return -1;
+    if (!found) { *count = 0; return 0; }
+    size_t blocks = block_count(t.df), block = blocks, used = 0;
+    uint32_t ids[POSTING_BLOCK], length = 0, at = 0;
+    if (t.dbytes < blocks * 8) return -1;
+    for (size_t i = 0; i < *count; ++i) {
+        uint32_t doc = docs[i];
+        if (block == blocks || (block + 1 < blocks && rd32(t.dp + (block + 1) * 8) <= doc)) {
+            size_t lo = block == blocks ? 0 : block + 1;
+            size_t hi = blocks;
+            while (lo < hi) {
+                size_t mid = lo + (hi - lo) / 2;
+                if (rd32(t.dp + mid * 8) <= doc) lo = mid + 1; else hi = mid;
+            }
+            if (!lo) continue;
+            block = lo - 1;
+            length = block_length(t.df, block);
+            if (decode_docs_block(t.dp, t.dbytes, t.df, block, ids) < 0 ||
+                ids[length - 1] >= s->ndocs) return -1;
+            at = 0;
+        }
+        while (at < length && ids[at] < doc) ++at;
+        if (at < length && ids[at] == doc) docs[used++] = doc;
     }
-    if (!lo) return 0;
-    size_t b = lo - 1;
-    uint32_t ids[POSTING_BLOCK], count = block_length(t.df, b);
-    if (decode_docs_block(t.dp, t.dbytes, t.df, b, ids) < 0 || ids[count - 1] >= s->ndocs) return -1;
-    for (uint32_t i = 0; i < count && ids[i] <= doc; ++i) if (ids[i] == doc) return 1;
+    *count = used;
     return 0;
+}
+
+static int term_contains(const DalwShard *s, uint64_t hash, uint32_t doc) {
+    size_t count = 1;
+    return dalw_refine_docs(s, hash, &doc, &count) < 0 ? -1 : (int)count;
 }
 
 int dalw_receipt_mode(const DalwShard *s, const DalwHit *hit, const uint64_t *hashes, size_t n,

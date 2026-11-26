@@ -76,4 +76,57 @@ while IFS= read -r receipt; do
 done < partial
 "$cli" search-any a.dalw 5 مفقود غائب > none
 test ! -s none
+# Quote starts in one read buffer and ends in the next. Other copies lie outside the recorded range.
+quote='abaaabمرحبا'
+awk 'BEGIN{for(i=0;i<8188;i++)printf "x"}' >span
+printf '%s-tail' "$quote" >>span
+printf '%s' "$quote" >body
+offset=$(wc -c <body)
+cat span >>body
+printf '%s' "$quote" >>body
+length=$(wc -c <span)
+digest=$(sha256sum <span)
+printf 'local\tpassage\tunopened-metadata-path\t%s\t%s\t%s\tالبحث\n' "$offset" "$length" "${digest%% *}" > rows
+"$cli" index receipts.dalw rows
+quote_bytes=$(printf '%s' "$quote" | wc -c)
+body_pin=$("$cli" verify receipts.dalw | sed 's/.*sha256=//')
+expected=$(printf '{"shard":"%s","doc":0,"source_sha256":"%s","source_offset":%u,"source_length":%u,"offset":%u,"length":%u}' "$body_pin" "${digest%% *}" "$offset" "$length" "$((offset+8188))" "$quote_bytes")
+test "$("$cli" cite receipts.dalw 0 body "$quote")" = "$expected"
+reject "$cli" cite receipts.dalw 0 body ''
+reject "$cli" cite receipts.dalw 1 body "$quote"
+reject "$cli" cite receipts.dalw 0 body 'absent'
+test ! -s out
+cp body changed
+printf '!' | dd of=changed bs=1 seek=$((offset+length-1)) conv=notrunc 2>/dev/null
+reject "$cli" cite receipts.dalw 0 changed "$quote"
+test ! -s out
+reject "$cli" cite receipts.dalw 0 span "$quote"
+reject "$cli" cite receipts.dalw 0 /no-such-source "$quote"
+reject "$cli" cite a.dalw 0 body "$quote"
+
+printf 'البحث المحلي\nغائب\n\n' >queries
+"$cli" batch-match a.dalw --rows <queries >actual
+"$cli" batch-match a.dalw <queries >postings
+cmp actual postings
+printf '[0]\n[]\n[]\n' >expected_rows
+cmp actual expected_rows
+"$cli" batch-match empty.dalw --rows <queries >empty_rows
+printf '[]\n[]\n[]\n' >expected_rows
+cmp empty_rows expected_rows
+printf '\000bad\n' >bad_query
+reject "$cli" batch-match a.dalw <bad_query
+reject "$cli" batch-match a.dalw --bad
+reject "$cli" batch-match damaged.dalw <queries
+reject "$cli" duplicates a.dalw 4
+reject "$cli" duplicates a.dalw -1
+"$cli" duplicates empty.dalw >actual
+test ! -s actual
+printf 'u\tt\tf\t0\t0\td\t\nu\tt\tf\t0\t0\td\tzebra\n' > rows
+"$cli" index features.dalw rows
+"$cli" fingerprints features.dalw > printed
+fp_pin=$("$cli" verify features.dalw | sed 's/.*sha256=//')
+test "$(wc -l < printed)" -eq 3
+grep -Fxq "{\"format\":\"dalw-simhash-v1\",\"shard\":\"$fp_pin\",\"documents\":2}" printed
+grep -Fxq '{"doc":0,"simhash":null}' printed
+grep -Eq '^\{"doc":1,"simhash":"[0-9a-f]{16}"\}$' printed
 echo 'DALW CLI passed'

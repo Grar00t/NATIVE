@@ -17,6 +17,7 @@ lang/tests/native_result_probe
 retrieval/native/test_*
 !retrieval/native/*.c
 retrieval/lowlevel/test_dalw
+retrieval/lowlevel/test_analysis
 retrieval/lowlevel/test_niyah_dalw
 retrieval/lowlevel/test_niyah_dalw_json
 retrieval/lowlevel/dalw-cli

@@ -29,6 +29,7 @@ int dalw_has_avx512(void);
 typedef void (*DalwTokFn)(uint64_t hash, void *user);
 void dalw_tokens(const char *text, size_t len, DalwTokFn fn, void *user);   /* surface-form hashes */
 uint64_t dalw_term_hash(const char *word);                                   /* first token, surface form */
+#define DALW_MAX_QUERY_TERMS 32u
 #define DALW_Q_STEM  0   /* Arabic words match by stem, others by surface */
 #define DALW_Q_EXACT 1   /* surface form only */
 size_t dalw_parse_query(const char *text, int mode, uint64_t *out, size_t max);

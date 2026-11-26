@@ -7,19 +7,6 @@
 
 #include "dalw.h"
 
-#define NIYAH_DALW_MAX_QUERY_TERMS 32u
-
-#ifdef DALW_Q_STEM
-#define NIYAH_DALW_Q_STEM DALW_Q_STEM
-#else
-#define NIYAH_DALW_Q_STEM 0
-#endif
-#ifdef DALW_Q_EXACT
-#define NIYAH_DALW_Q_EXACT DALW_Q_EXACT
-#else
-#define NIYAH_DALW_Q_EXACT 1
-#endif
-
 struct NiyahDalw {
     DalwShard shards[NIYAH_DALW_MAX_SHARDS];
     size_t count;
@@ -110,7 +97,7 @@ static uint64_t document_id_for(const DalwShard *shard, uint32_t shard_index, ui
 size_t niyah_dalw_query_mode(const NiyahDalw *handle, const char *query, int exact, int any,
                         NiyahDalwHit *hits, size_t cap, int *status)
 {
-    uint64_t terms[NIYAH_DALW_MAX_QUERY_TERMS];
+    uint64_t terms[DALW_MAX_QUERY_TERMS];
     size_t nterms, i, total = 0u, slots = 0u, largest = 0u;
     NiyahDalwHit *best = NULL;
     DalwHit *tmp = NULL;
@@ -120,8 +107,8 @@ size_t niyah_dalw_query_mode(const NiyahDalw *handle, const char *query, int exa
         set_status(status, NIYAH_DALW_E_ARG);
         return 0u;
     }
-    nterms = dalw_parse_query(query, exact ? NIYAH_DALW_Q_EXACT : NIYAH_DALW_Q_STEM,
-                              terms, NIYAH_DALW_MAX_QUERY_TERMS);
+    nterms = dalw_parse_query(query, exact ? DALW_Q_EXACT : DALW_Q_STEM,
+                              terms, DALW_MAX_QUERY_TERMS);
     if (nterms == 0u) {
         set_status(status, NIYAH_DALW_E_ARG);
         return 0u;
@@ -198,15 +185,15 @@ size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
 int niyah_dalw_receipt_mode(const NiyahDalw *handle, const NiyahDalwHit *hit,
                             const char *query, int exact, int any, char *out, size_t cap)
 {
-    uint64_t terms[NIYAH_DALW_MAX_QUERY_TERMS];
+    uint64_t terms[DALW_MAX_QUERY_TERMS];
     size_t nterms;
     DalwHit dh;
 
     if (out && cap) out[0] = '\0';
     if (!handle || !hit || !query || (out == NULL) != (cap == 0u)) return -1;
     if ((size_t)hit->shard >= handle->count) return -1;
-    nterms = dalw_parse_query(query, exact ? NIYAH_DALW_Q_EXACT : NIYAH_DALW_Q_STEM,
-                              terms, NIYAH_DALW_MAX_QUERY_TERMS);
+    nterms = dalw_parse_query(query, exact ? DALW_Q_EXACT : DALW_Q_STEM,
+                              terms, DALW_MAX_QUERY_TERMS);
     if (nterms == 0u) return -1;
     memset(&dh, 0, sizeof dh);
     dh.doc = hit->doc;
