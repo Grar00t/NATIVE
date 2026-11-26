@@ -1,5 +1,6 @@
 #include "dalw.h"
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,7 +28,80 @@ static void cmp_kernel(const char *name, Isect f, const uint32_t *a, size_t na,
     free(o);
 }
 
+static int expected_rank(const void *left, const void *right) {
+    const DalwHit *a = left, *b = right;
+    if (a->score != b->score) return a->score > b->score ? -1 : 1;
+    return (a->doc > b->doc) - (a->doc < b->doc);
+}
+
+static void check_ranked_blocks(void) {
+    enum { DOCS = 1040, TERMS = 3 };
+    const char *words[TERMS] = {"red", "green", "blue"};
+    const unsigned strides[TERMS] = {5, 3, 2};
+    const size_t limits[] = {1, 10, 64, 65, 128, DOCS};
+    unsigned tf[DOCS][TERMS], length[DOCS], df[TERMS] = {0}, total = 0;
+    DalwHit actual[DOCS], expected[DOCS];
+    uint64_t hashes[TERMS + 1];
+    const char *path = "./rank-blocks.dalw";
+    DalwBuilder *builder = dalw_builder_new();
+    CHECK(builder != NULL);
+    if (!builder) return;
+    for (unsigned doc = 0; doc < DOCS; ++doc) {
+        char text[96] = "base";
+        length[doc] = 1;
+        for (unsigned t = 0; t < TERMS; ++t) {
+            tf[doc][t] = (doc < 300 || doc >= 700) && doc % strides[t] == 0 ? 1 + doc % 2 : 0;
+            df[t] += tf[doc][t] != 0;
+            length[doc] += tf[doc][t];
+            for (unsigned j = 0; j < tf[doc][t]; ++j) { strcat(text, " "); strcat(text, words[t]); }
+        }
+        total += length[doc];
+        CHECK(dalw_builder_add(builder, "", text, strlen(text)) == 0);
+    }
+    remove(path);
+    CHECK(dalw_builder_write(builder, path) == 0);
+    dalw_builder_free(builder);
+    DalwShard shard;
+    int status = dalw_open(&shard, path, 1);
+    CHECK(status == 0);
+    if (status) return;
+    for (unsigned t = 0; t < TERMS; ++t) hashes[t] = dalw_term_hash(words[t]);
+    hashes[TERMS] = dalw_term_hash("absent");
+    for (int any = 0; any <= 1; ++any) {
+        size_t count = 0;
+        for (uint32_t doc = 0; doc < DOCS; ++doc) {
+            unsigned matched = 0;
+            float score = 0.0f, avg = (float)total / DOCS;
+            for (unsigned t = 0; t < TERMS; ++t) {
+                if (!tf[doc][t]) continue;
+                ++matched;
+                float idf = (float)log(1.0 + (DOCS - df[t] + 0.5) / (df[t] + 0.5));
+                float f = (float)tf[doc][t];
+                score += idf * f * 2.2f / (f + 1.2f * (0.25f + 0.75f * (float)length[doc] / avg));
+            }
+            if (any ? matched > 0 : matched == TERMS) expected[count++] = (DalwHit){doc, score};
+        }
+        qsort(expected, count, sizeof(*expected), expected_rank);
+        for (size_t i = 0; i < sizeof(limits) / sizeof(*limits); ++i) {
+            size_t n = dalw_search_mode(&shard, hashes, any ? TERMS + 1 : TERMS, any, actual, limits[i], &status);
+            CHECK(status == 0 && n == (count < limits[i] ? count : limits[i]));
+            for (size_t row = 0; row < n; ++row) {
+                CHECK(actual[row].doc == expected[row].doc);
+                CHECK(fabsf(actual[row].score - expected[row].score) < 0.00001f);
+            }
+        }
+    }
+    /* Remove the postings region. Both ranked paths must propagate the read error. */
+    shard.post_sz = 0;
+    for (int any = 0; any <= 1; ++any) {
+        CHECK(dalw_search_mode(&shard, hashes, TERMS, any, actual, 1, &status) == 0 && status < 0);
+    }
+    dalw_close(&shard);
+    remove(path);
+}
+
 int main(void) {
+    check_ranked_blocks();
     DalwSha256 s; uint8_t d[32]; char hex[65];
     dalw_sha256_init(&s); dalw_sha256_update(&s, "abc", 3); dalw_sha256_final(&s, d);
     for (int i = 0; i < 32; i++) sprintf(hex + 2 * i, "%02x", d[i]);

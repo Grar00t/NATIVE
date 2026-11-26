@@ -23,7 +23,7 @@ The search regressions cover Arabic paths and text, 64 indexes, result metadata 
 
 ### Search measurements
 
-Run `make bench-search` to time queries after building a 3,072-document fixture. Each row reports the median of 11 warm batches in nanoseconds per query. Timing excludes process startup, index construction, shard verification and output. The in-memory API sums matching query terms. The shard API requires all query terms and uses each distinct term once.
+Run `make bench-search` to time queries after building a 3,072-document fixture. Each row reports the median of 11 warm batches in nanoseconds per query. Timing excludes process startup, index construction, shard verification and output. The in-memory API sums matching query terms. The default shard search requires all distinct query terms. The optional any-word search sums BM25 contributions for the terms present in each document. Its regression test compares both modes with an exhaustive per-document scorer at six result limits.
 
 For a result comparison, build the same harness against both revisions and run each binary with `--dump`. Use `cmp` on the two outputs. The dump contains document IDs, hexadecimal floating-point scores and the leading source receipt at six result limits. Arabic token-boundary changes and malformed UTF-8 have separate regression cases. The fixture measures latency and result parity. Relevance evaluation requires queries with independently judged documents.
 

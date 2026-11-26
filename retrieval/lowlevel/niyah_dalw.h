@@ -52,11 +52,17 @@ size_t niyah_dalw_doc_count(const NiyahDalw *handle);
  * Returns the number of hits written (<= cap). */
 size_t niyah_dalw_query(const NiyahDalw *handle, const char *query, int exact,
                         NiyahDalwHit *hits, size_t cap, int *status);
+/* any != 0 matches one or more query terms. */
+size_t niyah_dalw_query_mode(const NiyahDalw *handle, const char *query, int exact, int any,
+                        NiyahDalwHit *hits, size_t cap, int *status);
 
 /* One-line JSON receipt for a hit (same query/exact as the query call).
  * Pass NULL, 0 to measure. Returns bytes excluding NUL, or -1 on error. */
 int niyah_dalw_receipt(const NiyahDalw *handle, const NiyahDalwHit *hit,
                        const char *query, int exact, char *out, size_t cap);
+/* any != 0 matches one or more query terms. */
+int niyah_dalw_receipt_mode(const NiyahDalw *handle, const NiyahDalwHit *hit,
+                       const char *query, int exact, int any, char *out, size_t cap);
 
 /* Copy hits into Niyah's own hit type. Returns the number written. */
 size_t niyah_dalw_to_search_hits(const NiyahDalwHit *in, size_t n,

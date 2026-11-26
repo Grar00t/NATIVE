@@ -5,12 +5,15 @@
     <sys:String x:Key="Open">فتح فهرس…</sys:String>
     <sys:String x:Key="Search">بحث</sys:String>
     <sys:String x:Key="Exact">تطابق حرفي</sys:String>
+    <sys:String x:Key="MatchAnyLabel">مطابقة أي كلمة</sys:String>
     <sys:String x:Key="QueryName">كلمات البحث</sys:String>
     <sys:String x:Key="Title">العنوان</sys:String>
     <sys:String x:Key="Source">المصدر</sys:String>
     <sys:String x:Key="Score">الدرجة</sys:String>
     <sys:String x:Key="Prompt">افتح ملف فهرس بصيغة .dalw للبحث فيه.</sys:String>
     <sys:String x:Key="Filter">فهرس البحث (*.dalw)|*.dalw</sys:String>
+    <sys:String x:Key="Opening">جارٍ فتح الفهارس ({0})…</sys:String>
+    <sys:String x:Key="Searching">جارٍ البحث في الفهرس…</sys:String>
     <sys:String x:Key="Opened">الفهارس المفتوحة: {0}</sys:String>
     <sys:String x:Key="Results">عدد النتائج: {0}   ·   الفهارس المفتوحة: {1}</sys:String>
     <sys:String x:Key="OpenError">تعذّر فتح الفهرس. {0}</sys:String>

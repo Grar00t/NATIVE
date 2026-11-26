@@ -82,6 +82,12 @@ int main(void)
             free(large);
         }
     }
+    n = niyah_dalw_search_json_mode(h, "weather local missing", 1, 1, 10, out, sizeof out, &st);
+    CHECK(n > 0 && st == NIYAH_DALW_OK && strstr(out, "\"match\":\"any\"") != NULL);
+    CHECK(strstr(out, "\"count\":2") != NULL && strstr(out, "\"v\":2") != NULL);
+    CHECK(niyah_dalw_search_json_mode(h, "weather local missing", 1, 1, 10, NULL, 0, &st) == n);
+    CHECK(niyah_dalw_search_json_mode(h, "weather local missing", 1, 1, 10, tiny, sizeof tiny, &st) < 0);
+    CHECK(st == NIYAH_DALW_E_MEM && tiny[0] == '\0');
     niyah_dalw_close(h);
     remove(path);
     puts(fails ? "JSON TESTS FAILED" : "JSON TESTS PASSED");

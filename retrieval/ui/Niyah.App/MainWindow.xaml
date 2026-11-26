@@ -19,6 +19,8 @@
                     Content="{StaticResource Search}" Padding="18,5" IsDefault="True"/>
             <CheckBox x:Name="Exact" DockPanel.Dock="Right" Margin="12,0"
                       VerticalAlignment="Center" Content="{StaticResource Exact}"/>
+            <CheckBox x:Name="MatchAny" DockPanel.Dock="Right" Margin="0,0,8,0"
+                      VerticalAlignment="Center" Content="{StaticResource MatchAnyLabel}"/>
             <TextBox x:Name="Query" Padding="8,5" AutomationProperties.Name="{StaticResource QueryName}"
                      VerticalContentAlignment="Center"/>
         </DockPanel>
