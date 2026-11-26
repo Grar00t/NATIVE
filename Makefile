@@ -89,8 +89,8 @@ build/search-bench: tests/search_bench.c $(SEARCH_SOURCES) retrieval/search/niya
 bench-search: build/search-bench
 	./build/search-bench
 
-build/think: tools/think.c
+build/think: tools/think.c Makefile
 	mkdir -p $(@D)
-	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror $< -o $@
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -static $< -o $@
 
 check-host: build/think

@@ -57,7 +57,7 @@ test "$(wc -l < "$tmp/doc-results")" -eq 5
 grep -F 'engine/docs/' "$tmp/doc-results" >/dev/null
 
 count=0
-for exe in build/engine/niyah build/engine/niyah-train build/engine/niyah_probe \
+for exe in build/think build/engine/niyah build/engine/niyah-train build/engine/niyah_probe \
            lang/niyahlex lang/niyahparse lang/niyahrun lang/niyahc lang/niyahc-tile \
            asm/build/trigram asm/build/attention_lm asm/build/exactcalc asm/build/nexus_audit \
            asm/build/continual_lora asm/build/tile_probe asm/build/tile_allocator \
