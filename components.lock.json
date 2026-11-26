@@ -52,6 +52,12 @@
     "i8": {
       "revision": "cbeb5f6c48b272adb26449e95f5f7c173c80e43d",
       "import": "Blocked int8 matrix multiply and native comparison tests"
+    },
+    "ribat": {
+      "revision": "4d06b352a26d9fb85bf14254fa6c2f548a077eab",
+      "branch_at_import": "main",
+      "import": "Complete source tree, tests, license and design documents",
+      "repository": "Grar00t/ribat"
     }
   },
   "scope": {
