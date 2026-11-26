@@ -24,11 +24,31 @@ retrieval/lowlevel/dalw-cli verify manual.dalw
 retrieval/lowlevel/dalw-cli search manual.dalw 5 checkpoint
 ~~~
 
-`search` requires every parsed term. `search-any` ranks documents containing at least one. Both use the first 32 distinct query terms. Arabic queries use stemming by default. Set `DALW_EXACT=1` for surface forms or `DALW_EXACT=0` for stemming. Its receipts list the query term hashes in `terms` and the hashes present in that document in `matched_terms`. The desktop option is **Match any word**.
+`search` requires every parsed term. `search-any` ranks documents containing at least one. Both use the first 32 distinct query terms. Arabic queries use stemming by default. Set `DALW_EXACT=1` for surface forms or `DALW_EXACT=0` for stemming. The `search-any` receipts list the query term hashes in `terms` and the hashes present in that document in `matched_terms`. The desktop option is **Match any word**.
 
 `dalw-cli verify SHARD EXPECTED_BODY_SHA256` compares the verified body with a 64-digit hexadecimal digest you kept separately. Use the `sha256` value printed by `verify` on a trusted copy. The final 32 trailer bytes are excluded from the digest. Set `DALW_VERIFY=1` to check the trailer during a command-line search.
 
 Each matching document produces one line of JSON with its title, source, score, and receipt ID. To index your own UTF-8 TSV, use `dalw-cli index OUT.dalw IN.tsv`. Each row contains the source URL, title, source filename, byte offset, byte length, digest, and text. Offsets and lengths are unsigned decimal integers. The first invalid row stops the import. Add `--skip-invalid` to report and skip malformed rows.
+
+### Inspect an index
+
+~~~sh
+cli=retrieval/lowlevel/dalw-cli
+printf '%s\n' 'matrix' 'matrix kernel' | "$cli" batch-match manual.dalw
+"$cli" fingerprints manual.dalw > manual-fingerprints.jsonl
+"$cli" duplicates manual.dalw 3
+"$cli" cite manual.dalw 0 README.md 'NATIVE contains'
+~~~
+
+`batch-match` reads one query per line and writes the matching document numbers in ascending order. It uses the existing postings by default. For repeated queries in one process, `--rows` builds bit rows once and checks candidates against the postings.
+
+`fingerprints` exports a shard digest and a 64-bit SimHash for each nonempty document. Empty documents have a null fingerprint. `duplicates` lists document pairs within a Hamming distance of 0 to 3. Both document numbers refer to insertion order in this shard.
+
+`cite` checks the SHA-256 of the document's recorded byte range in the file you supply. It reports the first literal match as a zero-based byte offset from the start of that file and a byte length. A missing quote, missing digest or changed source returns a failure.
+
+### Terminal progress
+
+Build `tools/think.c` with `make build/think` on Linux or `cl /std:c11 /O2 tools\think.c` on Windows. In a pipeline it copies stdin to stdout and reports the byte count on the terminal. Use `--count` to write the final count to redirected stderr. Run `--demo` in a terminal for the repeating dots. Ctrl+C ends the demo.
 
 ### Desktop search
 

@@ -13,6 +13,8 @@ Run from the repository root on x86-64 Linux or WSL.
 
 For one guest RAM size run `make -C hadeed runtime-test BOOT_RAM_MB=64`. The guest reports the page count after reserving the first 2 MiB. Physical allocation covers up to 256 MiB. The hosted allocator test also supplies overlapping, disabled, misaligned and out-of-range firmware entries.
 
+Run `make -B -C hadeed EXTRA_CFLAGS=-fcf-protection=branch trace-verify` to check an image with branch protection enabled. The verifier recognizes the four-byte ENDBR64 function entry and checks the PIC and PIT instructions immediately after it. The boot test requires at least three timer interrupts.
+
 To check the assembly trainer on a separate corpus, run `make -C asm test-training TRAINING_DATA=/absolute/path/to/data`. The directory must contain `corpus.txt` and `heldout.txt`, each longer than eight bytes. The target trains for 240 epochs, checks every exported FP32 parameter, and prints the training and held-out losses scaled by 1,000.
 
 The trainer in `model/` reads two Arabic records and exports a checkpoint. The test repeats training with the same seed, CRLF and blank lines, compares both files byte for byte, then maps the checkpoint into the engine. The identity checks accept its SHA-256 and reject changed digests. To check another model of the reference shape as well, set both `NIYAH_MMAP_MODEL_PATH` (absolute path) and `NIYAH_MMAP_MODEL_SHA256`.
@@ -30,3 +32,13 @@ For a result comparison, build the same harness against both revisions and run e
 The in-memory index uses 16-slot hash groups to look up terms and document IDs. Seven hash bits filter candidate keys before the full comparison. The scorer accumulates postings in windows of 256 document ordinals and visits only occupied windows. The public in-memory index structure has grown. Recompile applications that allocate it. Existing version 2 shard files use the same on-disk format.
 
 On Windows, `retrieval/ui/build.ps1` builds the native search DLL, the desktop client and the command-line probe. Model weights and generated indexes are local test outputs.
+
+### Batch matching and document fingerprints
+
+The batch index has three banks of 1,024 rows. A rank-zero word covers 64 documents. The next two ranks fold two and four words by OR, preserving the bit position within each word. Every term uses rank zero. Terms present in at most one eighth of the documents also use rank one. Terms present in at most one sixty-fourth use all three. The number of words examined grows with the shard. Each surviving document must pass exact posting membership for every query term.
+
+To compare the two paths, run `batch-match` with and without `--rows` on the same input file and compare stdout with `cmp`. Stderr reports setup and batch time separately. The batch time includes parsing and writing document IDs. The row path also reports the number of candidate IDs before verification.
+
+SimHash uses every indexed term, including Arabic surface forms and stems. Each feature has integer weight `(1 + floor(log2(tf))) * (1 + floor(log2(N / df)))`. A positive vote sets the bit. A tie clears it. Four 16-bit bands select candidate pairs. The Hamming check uses POPCNT on x86-64 CPUs that support it. The portable path stops counting once the distance exceeds the requested radius. The export records the index digest because document frequencies depend on the shard. A distance threshold requires evaluation on labeled examples before use for deduplication.
+
+The C11 regression constructs rank-row collisions, exercises the 64- and 128-document boundaries, and compares the exact IDs against a document-by-term table. A separate exhaustive pair comparison checks each radius from 0 through 3. Source tests cover Arabic text across a read-buffer boundary and a source changed after the quoted bytes.
