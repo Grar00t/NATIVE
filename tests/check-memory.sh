@@ -17,6 +17,9 @@ for component in engine retrieval/search; do
     if [ "$component" = retrieval/search ]; then ctest --test-dir "$build" --output-on-failure; fi
 done
 
+make -C "$root/asm" -j"$jobs" "QKV_BUILD=$work/qkv" "CFLAGS=$flags" \
+    "QKV_LDFLAGS=$link" test-qkv-gradients
+
 # The Make-based components place binaries next to their sources.
 mkdir -p "$work/model" "$work/retrieval/lowlevel" "$work/retrieval/native" "$work/lang/tests"
 mkdir -p "$work/engine/src" "$work/engine/include/niyah"

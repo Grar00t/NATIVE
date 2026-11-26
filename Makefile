@@ -57,9 +57,12 @@ retrieval:
 	cmake -S retrieval/search -B build/search -DCMAKE_EXE_LINKER_FLAGS=-static
 	cmake --build build/search --parallel $(JOBS)
 
-.PHONY: check-components clean-components
+.PHONY: check-components clean-components test-qkv-gradients
+test-qkv-gradients:
+	$(MAKE) -C asm test-qkv-gradients
+
 check-host: check-components
-check-components: model retrieval asm
+check-components: model retrieval asm test-qkv-gradients
 	$(MAKE) -C model check
 	$(MAKE) -C asm check-i8
 	$(MAKE) -C retrieval/native LDLIBS="-static -lm" test
