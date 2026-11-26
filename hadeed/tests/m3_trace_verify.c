@@ -224,7 +224,7 @@ static void load_kernel_from_image(void)
     kernel_len = (usize)sectors * SECTOR;
     pread_exact(fd, kernel, kernel_len, KERNEL_LBA * SECTOR, 13L, "cannot read kernel payload");
     (void)syscall1(SYS_CLOSE, fd);
-    trace("m3.kernel_payload", KERNEL_LBA * SECTOR, kernel_len, "boot/stage1.asm:92-97");
+    trace("m3.kernel_payload", KERNEL_LBA * SECTOR, kernel_len, "boot/stage1.asm");
 }
 
 static void load_elf_symbols(void)
@@ -320,53 +320,36 @@ static isize find_direct_call(struct symbol from, u64 target, usize start)
 
 static void verify_idt_and_stubs(void)
 {
-    const struct symbol idt = find_symbol("idt", 40L);
-    const struct symbol install = find_symbol("idt_install", 41L);
-    const struct symbol table = find_symbol("isr_stub_table", 42L);
-    const u8 *install_code = kernel_ptr(install.value, (usize)install.size, 43L, "idt_install outside kernel");
-    const u8 *table_bytes = kernel_ptr(table.value, (usize)table.size, 44L, "ISR table outside kernel");
-    static const u8 idt_base_load[] = {0xba,0x00,0x20,0x10,0x00};
-    static const u8 idt_end_cmp[] = {0x48,0x3d,0x00,0x30,0x10,0x00};
-    static const u8 irq_loop_end[] = {0x48,0x83,0xf8,0x30};
-    static const u8 lidt_seq[] = {0x0f,0x01,0x5c,0x24,0x06};
-    unsigned int v;
-    int trap_attr_seen = 0;
-    int irq_attr_seen = 0;
-    usize i;
-
-    if (idt.value != IDT_PHYS || idt.size != IDT_BYTES) fail(45L, "IDT physical address/size mismatch");
-    if (table.size != 48UL * 8UL) fail(46L, "ISR table size mismatch");
-    if (find_bytes(install_code, (usize)install.size, idt_base_load, sizeof idt_base_load) < 0 ||
-        find_bytes(install_code, (usize)install.size, idt_end_cmp, sizeof idt_end_cmp) < 0 ||
-        find_bytes(install_code, (usize)install.size, irq_loop_end, sizeof irq_loop_end) < 0 ||
-        find_bytes(install_code, (usize)install.size, lidt_seq, sizeof lidt_seq) < 0) {
-        fail(47L, "IDT install/lidt sequence missing");
-    }
-
-    for (i = 0UL; i + 7UL <= install.size; ++i) {
-        if (install_code[i] == 0x0fU && install_code[i + 1UL] == 0xb7U &&
-            (install_code[i + 2UL] == 0x35U || install_code[i + 2UL] == 0x3dU)) {
-            const long disp = (long)(i32)rd32(install_code + i + 3UL);
-            const u64 target = install.value + i + 7UL + (u64)disp;
-            const u8 *word = kernel_ptr(target, 2UL, 48L, "IDT gate attribute outside kernel");
-            if (rd16(word) == 0x8f00U) trap_attr_seen = 1;
-            if (rd16(word) == 0x8e00U) irq_attr_seen = 1;
+    const struct symbol idt = find_symbol("idt", 40);
+    const struct symbol table = find_symbol("isr_stub_table", 41);
+    const struct symbol common = find_symbol("isr_common", 42);
+    const struct symbol dispatch = find_symbol("isr_dispatch", 43);
+    const u8 *entries = kernel_ptr(table.value, (usize)table.size, 44, "ISR table outside image");
+    const u8 *handler = kernel_ptr(common.value, (usize)common.size, 44, "common ISR outside image");
+    const u32 error_vectors = (1U<<8)|(1U<<10)|(1U<<11)|(1U<<12)|(1U<<13)|
+                              (1U<<14)|(1U<<17)|(1U<<21)|(1U<<29)|(1U<<30);
+    if (idt.value != IDT_PHYS || idt.size != IDT_BYTES || table.size != 48 * 8)
+        fail(45, "interrupt table base or size differs");
+    for (unsigned v = 0; v < 48; ++v) {
+        u64 addr = rd64(entries + v * 8);
+        const u8 *stub = kernel_ptr(addr, 9, 46, "ISR stub outside image");
+        usize i = 0;
+        if (v >= 32 || !(error_vectors & (1U << v))) {
+            if (stub[0] != 0x6a || stub[1] != 0) fail(47, "missing synthetic error word");
+            i = 2;
         }
+        if (stub[i] != 0x6a || stub[i+1] != v) fail(48, "wrong ISR vector");
+        i += 2;
+        long displacement;
+        if (stub[i] == 0xeb) { displacement = (signed char)stub[i+1]; i += 2; }
+        else if (stub[i] == 0xe9) { displacement = (i32)rd32(stub+i+1); i += 5; }
+        else fail(49, "ISR has no jump to shared entry");
+        if (addr + i + (u64)displacement != common.value) fail(50, "wrong common ISR target");
     }
-    if (!trap_attr_seen || !irq_attr_seen) fail(49L, "IDT trap/interrupt gate attributes not referenced");
-    trace("idt.physical", idt.value, idt.size, "kernel/linker.ld:36-41");
-    trace("idt.gate_types", install.value, 0x0000000000008e8fUL, "kernel/idt.c:77-95");
-
-    for (v = 32U; v <= 47U; ++v) {
-        const u64 target = rd64(table_bytes + (usize)v * 8UL);
-        const u8 *stub = kernel_ptr(target, 6UL, 50L, "IRQ stub target outside kernel payload");
-        const u64 gate_addr = idt.value + (u64)v * 16UL;
-        if (stub[0] != 0x6aU || stub[1] != 0U || stub[2] != 0x6aU || stub[3] != (u8)v ||
-            (stub[4] != 0xebU && stub[4] != 0xe9U)) {
-            fail(51L, "IRQ stub encoding invalid");
-        }
-        trace("idt.irq_gate_target", gate_addr, target, "kernel/idt.c:88-90;kernel/isr.asm:57-72,128-136");
-    }
+    isize call = find_direct_call(common, dispatch.value, 0);
+    if (call < 1 || handler[(usize)call - 1] != 0xfc || common.size < 2 ||
+        rd16(handler + common.size - 2) != 0xcf48U) fail(51, "ISR dispatch or return differs");
+    trace("idt.stub_targets", table.value, 48, "kernel/isr.asm");
 }
 
 static void verify_pic(void)
@@ -386,7 +369,7 @@ static void verify_pic(void)
     };
     const u8 *code = kernel_ptr(pic.value, (usize)pic.size, 61L, "PIC function outside kernel");
     if (pic.size < sizeof expected || !bytes_equal(code, expected, sizeof expected)) fail(62L, "8259 ICW/mask sequence mismatch");
-    trace("pic.icw1_icw4_masks", pic.value, 0x11202804020101feUL, "kernel/pic.c:3-37");
+    trace("pic.icw1_icw4_masks", pic.value, 0x11202804020101feUL, "kernel/pic.c");
 }
 
 static void verify_pit(void)
@@ -395,148 +378,55 @@ static void verify_pit(void)
     static const u8 expected[] = {0xb0,0x36,0xe6,0x43,0xb0,0x9c,0xe6,0x40,0xb0,0x2e,0xe6,0x40};
     const u8 *code = kernel_ptr(pit.value, (usize)pit.size, 71L, "PIT function outside kernel");
     if (pit.size < sizeof expected || !bytes_equal(code, expected, sizeof expected)) fail(72L, "PIT mode/divisor sequence mismatch");
-    trace("pit.channel0_mode3", pit.value, 0x36UL, "kernel/pit.c:1-12");
-    trace("pit.divisor_11932", pit.value + 4UL, 0x2e9cUL, "kernel/pit.c:7-10");
+    trace("pit.channel0_mode3", pit.value, 0x36UL, "kernel/pit.c");
+    trace("pit.divisor_11932", pit.value + 4UL, 0x2e9cUL, "kernel/pit.c");
 }
 
 static void verify_irq0_counter(void)
 {
-    const struct symbol dispatch = find_symbol("isr_dispatch", 80L);
-    const struct symbol ticks = find_symbol("g_ticks", 81L);
-    const struct symbol eoi = find_symbol("pic_send_eoi", 82L);
-    const u8 *code = kernel_ptr(dispatch.value, (usize)dispatch.size, 83L, "dispatcher outside kernel");
-    static const u8 irq0_cmp[] = {0x48,0x83,0xff,0x20};
-    static const u8 inc[] = {0x48,0x83,0xc0,0x01};
-    usize i;
-    int read_seen = 0;
-    int write_seen = 0;
-    int eoi_seen = 0;
-
-    if (find_bytes(code, (usize)dispatch.size, irq0_cmp, sizeof irq0_cmp) < 0 ||
-        find_bytes(code, (usize)dispatch.size, inc, sizeof inc) < 0) {
-        fail(84L, "IRQ0 vector/increment path missing");
-    }
-    for (i = 0UL; i + 7UL <= dispatch.size; ++i) {
-        if (code[i] == 0x48U && code[i + 1UL] == 0x8bU && code[i + 2UL] == 0x05U &&
-            resolve_rip_target(dispatch.value + i, 7UL, 3UL, ticks.value)) read_seen = 1;
-        if (code[i] == 0x48U && code[i + 1UL] == 0x89U && code[i + 2UL] == 0x05U &&
-            resolve_rip_target(dispatch.value + i, 7UL, 3UL, ticks.value)) write_seen = 1;
-        if ((code[i] == 0xe8U || code[i] == 0xe9U) && i + 5UL <= dispatch.size) {
-            const long rel = (long)(i32)rd32(code + i + 1UL);
-            const u64 target = dispatch.value + i + 5UL + (u64)rel;
-            if (target == eoi.value) eoi_seen = 1;
+    const struct symbol dispatch = find_symbol("isr_dispatch", 80);
+    const struct symbol ticks = find_symbol("g_ticks", 81);
+    const struct symbol eoi = find_symbol("pic_send_eoi", 82);
+    const u8 *code = kernel_ptr(dispatch.value, (usize)dispatch.size, 83, "ISR outside payload");
+    int read = 0, write = 0, acknowledge = 0;
+    for (usize i = 0; i < dispatch.size; ++i) {
+        if (i + 7 <= dispatch.size && (code[i] & 0xf8U) == 0x48U &&
+            (code[i + 2] & 0xc7U) == 5 &&
+            resolve_rip_target(dispatch.value + i, 7, 3, ticks.value)) {
+            if (code[i+1] == 0x8b) read = 1;
+            if (code[i+1] == 0x89) write = 1;
+            if (code[i+1] == 0xff && code[i+2] == 5) read = write = 1;
+        }
+        /* addq $1, g_ticks(%rip) updates memory directly. */
+        if (i + 8 <= dispatch.size && code[i] == 0x48 && code[i+1] == 0x83 &&
+            code[i+2] == 0x05 && code[i+7] == 1 &&
+            resolve_rip_target(dispatch.value + i, 8, 3, ticks.value)) read = write = 1;
+        if (i + 5 <= dispatch.size && (code[i] == 0xe8 || code[i] == 0xe9)) {
+            u64 target = dispatch.value + i + 5 + (u64)(long)(i32)rd32(code + i + 1);
+            if (target == eoi.value) acknowledge = 1;
         }
     }
-    if (!read_seen || !write_seen || !eoi_seen) fail(85L, "IRQ0 counter/EOI path incomplete");
-    trace("irq0.counter_increment", dispatch.value, ticks.value, "kernel/idt.c:109-115");
-    trace("irq0.master_eoi", dispatch.value, eoi.value, "kernel/idt.c:112-115;kernel/pic.c:39-51");
+    if (ticks.size != 8 || !read || !write || !acknowledge)
+        fail(85, "IRQ counter or PIC acknowledgement reference missing");
+    trace("irq0.counter", dispatch.value, ticks.value, "kernel/idt.c");
+    trace("irq0.eoi", dispatch.value, eoi.value, "kernel/pic.c");
 }
 
 static void verify_main_path(void)
 {
-    const struct symbol main_sym = find_symbol("kmain", 90L);
-    const struct symbol ticks = find_symbol("g_ticks", 91L);
-    const struct symbol install = find_symbol("idt_install", 92L);
-    const struct symbol pic = find_symbol("pic_remap_irq0", 93L);
-    const struct symbol pit = find_symbol("pit_init_100hz", 94L);
-    const struct symbol ok = find_symbol("m3_ok_marker", 95L);
-    const struct symbol tick_prefix = find_symbol("m3_tick_prefix", 96L);
-    const u8 *code = kernel_ptr(main_sym.value, (usize)main_sym.size, 97L, "kmain outside kernel");
-    const u8 *ok_bytes = kernel_ptr(ok.value, 7UL, 98L, "M3 OK marker outside payload");
-    const u8 *prefix_bytes = kernel_ptr(tick_prefix.value, 6UL, 99L, "TICK prefix outside payload");
-    static const u8 ok_expected[] = {'M','3',' ','O','K','\n','\0'};
-    static const u8 prefix_expected[] = {'T','I','C','K',' ','\0'};
-    static const u8 next100[] = {0xbf,0x64,0x00,0x00,0x00};
-    static const u8 cmp300[] = {0x48,0x81,0xff,0x2c,0x01,0x00,0x00};
-    static const u8 add100[] = {0x48,0x83,0xc7,0x64};
-    isize call_idt;
-    isize call_pic;
-    isize call_pit;
-    isize init100;
-    isize cmp300_off;
-    isize add100_off;
-    usize i;
-    usize sti_off = (usize)-1;
-    int zero_seen = 0;
-    int tick_read_seen = 0;
-    u64 branch_target;
-
-    if (!bytes_equal(ok_bytes, ok_expected, sizeof ok_expected) ||
-        !bytes_equal(prefix_bytes, prefix_expected, sizeof prefix_expected)) fail(100L, "M3 output strings mismatch");
-
-    for (i = 0UL; i + 11UL <= main_sym.size; ++i) {
-        if (code[i] == 0x48U && code[i + 1UL] == 0xc7U && code[i + 2UL] == 0x05U &&
-            rd32(code + i + 7UL) == 0U && resolve_rip_target(main_sym.value + i, 11UL, 3UL, ticks.value)) {
-            zero_seen = 1;
-            break;
-        }
+    const struct symbol main_sym = find_symbol("kmain", 90);
+    const char *const init[] = {"idt_install", "idt_check", "pic_remap_irq0", "pit_init_100hz"};
+    const u8 *code = kernel_ptr(main_sym.value, (usize)main_sym.size, 91, "C entry outside payload");
+    static const u8 wait_irq[] = {0xfb, 0xf4, 0xfa};
+    usize pos = 0;
+    for (usize i = 0; i < sizeof init / sizeof init[0]; ++i) {
+        isize call = find_direct_call(main_sym, find_symbol(init[i], 92).value, pos);
+        if (call < 0) fail(93, "interrupt initialization order differs");
+        pos = (usize)call + 5;
     }
-    if (!zero_seen) fail(101L, "g_ticks is not initialized to zero");
-
-    call_idt = find_direct_call(main_sym, install.value, 0UL);
-    call_pic = call_idt < 0 ? -1 : find_direct_call(main_sym, pic.value, (usize)call_idt + 5UL);
-    call_pit = call_pic < 0 ? -1 : find_direct_call(main_sym, pit.value, (usize)call_pic + 5UL);
-    if (call_idt < 0 || call_pic < 0 || call_pit < 0) fail(102L, "IDT/PIC/PIT call sequence missing");
-    for (i = (usize)call_pit + 5UL; i < main_sym.size; ++i) {
-        if (code[i] == 0xfbU) {
-            sti_off = i;
-            break;
-        }
-    }
-    if (sti_off == (usize)-1) fail(103L, "sti missing after PIT initialization");
-    if ((usize)call_idt >= (usize)call_pic || (usize)call_pic >= (usize)call_pit || (usize)call_pit >= sti_off) {
-        fail(104L, "IDT/PIC/PIT/sti order invalid");
-    }
-    trace("main.idt_pic_pit_sti", main_sym.value + (u64)call_idt, main_sym.value + sti_off, "kernel/main.c:77-81");
-
-    init100 = find_bytes(code + sti_off + 1UL, (usize)main_sym.size - sti_off - 1UL, next100, sizeof next100);
-    if (init100 < 0) fail(105L, "next_report 100 initialization missing");
-    init100 += (isize)sti_off + 1;
-
-    for (i = (usize)init100; i + 7UL <= main_sym.size; ++i) {
-        if (code[i] == 0x48U && code[i + 1UL] == 0x8bU && code[i + 2UL] == 0x05U &&
-            resolve_rip_target(main_sym.value + i, 7UL, 3UL, ticks.value)) {
-            tick_read_seen = 1;
-            break;
-        }
-    }
-    if (!tick_read_seen) fail(106L, "main loop does not read initialized g_ticks");
-
-    cmp300_off = find_bytes(code + (usize)init100, (usize)main_sym.size - (usize)init100, cmp300, sizeof cmp300);
-    add100_off = find_bytes(code + (usize)init100, (usize)main_sym.size - (usize)init100, add100, sizeof add100);
-    if (cmp300_off < 0 || add100_off < 0) fail(107L, "100/200/300 deterministic threshold path missing");
-    cmp300_off += init100;
-    add100_off += init100;
-    if (add100_off <= cmp300_off) fail(108L, "100 tick increment is not after 300 comparison");
-
-    if ((usize)cmp300_off + 9UL > main_sym.size || code[(usize)cmp300_off + 7UL] != 0x74U) {
-        fail(109L, "M3 OK branch is not direct JE from 300 comparison");
-    }
-    branch_target = main_sym.value + (u64)cmp300_off + 9UL +
-                    (u64)(long)(signed char)code[(usize)cmp300_off + 8UL];
-    if (branch_target < main_sym.value || branch_target + 5UL > main_sym.value + main_sym.size) {
-        fail(110L, "M3 OK branch target outside kmain");
-    }
-    {
-        const u8 *target = kernel_ptr(branch_target, 5UL, 111L, "M3 OK target outside payload");
-        if (target[0] != 0xbaU || (u64)rd32(target + 1UL) != ok.value) fail(112L, "M3 OK branch does not reference marker");
-    }
-    {
-        const usize target_off = (usize)(branch_target - main_sym.value);
-        int cli_seen = 0;
-        int hlt_seen = 0;
-        for (i = target_off; i < main_sym.size && i < target_off + 64UL; ++i) {
-            if (code[i] == 0xfaU) cli_seen = 1;
-            if (cli_seen && code[i] == 0xf4U) {
-                hlt_seen = 1;
-                break;
-            }
-        }
-        if (!cli_seen || !hlt_seen) fail(113L, "M3 OK path does not cli/hlt");
-    }
-    trace("main.tick_threshold_start", main_sym.value + (u64)init100, 100UL, "kernel/main.c:69,83-95");
-    trace("main.tick_threshold_300", main_sym.value + (u64)cmp300_off, 300UL, "kernel/main.c:85-92");
-    trace("main.m3_ok_reachable", branch_target, ok.value, "kernel/main.c:89-90;kernel/main.c:56-63");
+    if (find_bytes(code + pos, (usize)main_sym.size - pos, wait_irq, sizeof wait_irq) < 0)
+        fail(94, "missing interruptible wait after PIT initialization");
+    trace("main.timer_wait", main_sym.value, 3, "kernel/main.c");
 }
 
 void _start(void)

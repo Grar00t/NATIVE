@@ -94,6 +94,24 @@ void idt_install(void)
     __asm__ volatile ("lidt %0" : : "m" (descriptor) : "memory");
 }
 
+int idt_check(void)
+{
+    struct idtr active;
+    __asm__ volatile ("sidt %0" : "=m" (active) :: "memory");
+    if (active.base != (u64)(usize)idt || active.limit != sizeof idt - 1) return 0;
+    const volatile struct idt_gate *gates = (const volatile struct idt_gate *)(usize)active.base;
+    for (usize i = 0; i < IDT_ENTRIES; ++i) {
+        const volatile struct idt_gate *gate = &gates[i];
+        const u64 address = gate->offset_low | ((u64)gate->offset_mid << 16) |
+                            ((u64)gate->offset_high << 32);
+        const u64 expected = (u64)(usize)(i < 48 ? isr_stub_table[i] : isr_default);
+        const u8 type = (i >= 32 && i < 48) ? GATE_INTERRUPT : GATE_TRAP;
+        if (address != expected || gate->selector != KERNEL_CS || gate->type_attr != type ||
+            gate->ist != 0 || gate->zero != 0) return 0;
+    }
+    return 1;
+}
+
 __attribute__((noreturn)) static void exception_halt(void)
 {
     debug_putc('E');

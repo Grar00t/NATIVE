@@ -236,8 +236,8 @@ static void verify_gdt(usize desc_off)
         ((data >> 44) & 1UL) != 1UL || ((data >> 43) & 1UL) != 0UL || ((data >> 41) & 1UL) != 1UL) {
         fail(45L, "selector 0x20 is not ring0 writable data");
     }
-    trace("gdt.cs64.selector18", (u64)base + 24UL, code, "boot/stage1.asm:79-84");
-    trace("gdt.data.selector20", (u64)base + 32UL, data, "boot/stage1.asm:79-84");
+    trace("gdt.cs64.selector18", (u64)base + 24UL, code, "boot/stage1.asm");
+    trace("gdt.data.selector20", (u64)base + 32UL, data, "boot/stage1.asm");
 }
 
 static void verify_elf_rodata(usize elf_len, usize kernel_len, u64 *debug_addr, u64 *banner_addr)
@@ -286,8 +286,8 @@ static void verify_elf_rodata(usize elf_len, usize kernel_len, u64 *debug_addr, 
             if (dpos < 0 || bpos < 0) fail(66L, "required rodata strings missing");
             *debug_addr = addr + (u64)dpos;
             *banner_addr = addr + (u64)bpos;
-            trace("kernel.rodata.debug", *debug_addr, 0x4c4d36340aUL, "kernel/main.c:15-16");
-            trace("kernel.rodata.banner", *banner_addr, 0x4841444545443634UL, "kernel/main.c:12-13");
+            trace("kernel.rodata.debug", *debug_addr, 0x4c4d36340aUL, "kernel/main.c");
+            trace("kernel.rodata.banner", *banner_addr, 0x4841444545443634UL, "kernel/main.c");
             return;
         }
     }
@@ -314,7 +314,7 @@ void _start(void)
     if (image_fd < 0L) fail(10L, "cannot open build/hadeed.img");
     pread_exact(image_fd, boot, sizeof boot, 0UL, 11L, "cannot read boot sector");
     if (boot[510] != 0x55U || boot[511] != 0xaaU) fail(20L, "0x55AA signature missing");
-    trace("boot.signature", 0x7dfeUL, 0xaa55UL, "boot/bootloader.asm:47-48");
+    trace("boot.signature", 0x7dfeUL, 0xaa55UL, "boot/bootloader.asm");
 
     dap = parse_boot_dap();
     if (boot[dap] != 0x10U || boot[dap + 1] != 0U) fail(23L, "boot DAP header invalid");
@@ -323,9 +323,9 @@ void _start(void)
     seg16 = rd16(boot + dap + 6UL);
     lba = rd64(boot + dap + 8UL);
     if (sectors != 8U || off16 != 0x8000U || seg16 != 0U || lba != 1UL) fail(24L, "boot DAP values invalid");
-    trace("boot.int13.ah42", 0x7c00UL + (u64)dap, 0x42UL, "boot/bootloader.asm:19-22");
-    trace("boot.dap.stage1", 0x7c00UL + (u64)dap, ((u64)sectors << 48) | ((u64)seg16 << 32) | off16, "boot/bootloader.asm:37-42");
-    trace("boot.dap.stage1_lba", 0x7c00UL + (u64)dap + 8UL, lba, "boot/bootloader.asm:37-42");
+    trace("boot.int13.ah42", 0x7c00UL + (u64)dap, 0x42UL, "boot/bootloader.asm");
+    trace("boot.dap.stage1", 0x7c00UL + (u64)dap, ((u64)sectors << 48) | ((u64)seg16 << 32) | off16, "boot/bootloader.asm");
+    trace("boot.dap.stage1_lba", 0x7c00UL + (u64)dap + 8UL, lba, "boot/bootloader.asm");
 
     pread_exact(image_fd, stage1, sizeof stage1, STAGE1_LBA * SECTOR, 12L, "cannot read stage1 sectors");
     sdap = parse_stage1_dap();
@@ -338,14 +338,14 @@ void _start(void)
     kernel_len = (usize)sectors * SECTOR;
     if (kernel_len > sizeof kernel) fail(34L, "kernel DAP exceeds verifier buffer");
     pread_exact(image_fd, kernel, kernel_len, KERNEL_LBA * SECTOR, 13L, "cannot read kernel payload");
-    trace("stage1.dap.kernel", 0x8000UL + (u64)sdap, ((u64)sectors << 48) | ((u64)seg16 << 32) | off16, "boot/stage1.asm:92-97");
-    trace("stage1.dap.kernel_lba", 0x8000UL + (u64)sdap + 8UL, lba, "boot/stage1.asm:92-97");
+    trace("stage1.dap.kernel", 0x8000UL + (u64)sdap, ((u64)sectors << 48) | ((u64)seg16 << 32) | off16, "boot/stage1.asm");
+    trace("stage1.dap.kernel_lba", 0x8000UL + (u64)sdap + 8UL, lba, "boot/stage1.asm");
 
     {
         static const u8 a20[] = {0xe4,0x92,0x0c,0x02,0x24,0xfe,0xe6,0x92};
         pos = find_bytes(stage1, sizeof stage1, a20, sizeof a20);
         if (pos < 0) fail(40L, "A20 port 0x92 sequence missing");
-        trace("stage1.a20.port92", 0x8000UL + (u64)pos, 0x02UL, "boot/stage1.asm:28-32");
+        trace("stage1.a20.port92", 0x8000UL + (u64)pos, 0x02UL, "boot/stage1.asm");
     }
     {
         static const u8 paging[] = {
@@ -363,9 +363,9 @@ void _start(void)
         if (pos < 0) fail(41L, "page-table write sequence missing");
         if ((pml4e & 3UL) != 3UL || (pml4e >> 63) != 0UL || (pdpte & 3UL) != 3UL || (pdpte >> 63) != 0UL ||
             (pde & 0x83UL) != 0x83UL || (pde >> 63) != 0UL) fail(41L, "identity map flags invalid");
-        trace("paging.pml4_0", PML4_ADDR, pml4e, "boot/stage1.asm:41-47");
-        trace("paging.pdpt_0", PDPT_ADDR, pdpte, "boot/stage1.asm:41-47");
-        trace("paging.pd_0_2m", PD_ADDR, pde, "boot/stage1.asm:41-47");
+        trace("paging.pml4_0", PML4_ADDR, pml4e, "boot/stage1.asm");
+        trace("paging.pdpt_0", PDPT_ADDR, pdpte, "boot/stage1.asm");
+        trace("paging.pd_0_2m", PD_ADDR, pde, "boot/stage1.asm");
     }
     {
         static const u8 lgdt_head[] = {0x0f,0x01,0x16};
@@ -375,7 +375,7 @@ void _start(void)
             const u16 desc_addr = rd16(stage1 + (usize)pos + 3UL);
             if (desc_addr < 0x8000U || desc_addr + 6U > 0x9000U) fail(47L, "lgdt descriptor address invalid");
             verify_gdt((usize)(desc_addr - 0x8000U));
-            trace("stage1.lgdt", 0x8000UL + (u64)pos, desc_addr, "boot/stage1.asm:49");
+            trace("stage1.lgdt", 0x8000UL + (u64)pos, desc_addr, "boot/stage1.asm");
         }
     }
     {
@@ -387,10 +387,10 @@ void _start(void)
         };
         pos = find_bytes(stage1, sizeof stage1, crseq, sizeof crseq);
         if (pos < 0) fail(48L, "CR4/CR3/EFER/CR0 sequence missing");
-        trace("stage1.cr4.pae", 0x8000UL + (u64)pos, 0x20UL, "boot/stage1.asm:51-53");
-        trace("stage1.cr3", 0x8000UL + (u64)pos + 10UL, PML4_ADDR, "boot/stage1.asm:55-56");
-        trace("stage1.efer.lme", 0x8000UL + (u64)pos + 19UL, 0x100UL, "boot/stage1.asm:58-61");
-        trace("stage1.cr0.pe_pg", 0x8000UL + (u64)pos + 34UL, 0x80000001UL, "boot/stage1.asm:63-65");
+        trace("stage1.cr4.pae", 0x8000UL + (u64)pos, 0x20UL, "boot/stage1.asm");
+        trace("stage1.cr3", 0x8000UL + (u64)pos + 10UL, PML4_ADDR, "boot/stage1.asm");
+        trace("stage1.efer.lme", 0x8000UL + (u64)pos + 19UL, 0x100UL, "boot/stage1.asm");
+        trace("stage1.cr0.pe_pg", 0x8000UL + (u64)pos + 34UL, 0x80000001UL, "boot/stage1.asm");
     }
     {
         usize i;
@@ -399,7 +399,7 @@ void _start(void)
             if (stage1[i] == 0x66U && stage1[i + 1] == 0xeaU && rd16(stage1 + i + 6UL) == 0x18U) {
                 const u32 target = rd32(stage1 + i + 2UL);
                 if (target < 0x8000U || target >= 0x9000U) fail(49L, "long-mode far jump target invalid");
-                trace("stage1.far_jump.cs18", 0x8000UL + i, target, "boot/stage1.asm:67");
+                trace("stage1.far_jump.cs18", 0x8000UL + i, target, "boot/stage1.asm");
                 found = 1;
                 break;
             }
@@ -407,51 +407,42 @@ void _start(void)
         if (!found) fail(49L, "far jump to selector 0x18 missing");
     }
 
-    if (kernel_len < 32UL || kernel[0] != 0xfaU || kernel[1] != 0x48U || kernel[2] != 0xc7U || kernel[3] != 0xc4U ||
-        rd32(kernel + 4) != 0x00080000U || kernel[8] != 0x48U || kernel[9] != 0x31U || kernel[10] != 0xedU || kernel[11] != 0xe8U) {
-        fail(50L, "kernel entry prologue invalid");
-    }
     {
-        const long rel = (long)(int)rd32(kernel + 12);
-        const u64 target = KERNEL_PHYS + 16UL + (u64)rel;
-        if (target < KERNEL_PHYS || target >= KERNEL_PHYS + kernel_len) fail(51L, "kmain call target outside payload");
-        trace("kernel.entry.stack", KERNEL_PHYS + 1UL, 0x80000UL, "kernel/entry.asm:8-12");
-        trace("kernel.entry.call_kmain", KERNEL_PHYS + 11UL, target, "kernel/entry.asm:12");
+        static const u8 prologue[] = {0xfa,0x48,0xc7,0xc4,0,0,8,0,0x48,0x31,0xed,0xfc,0x48,0x8d,0x3d};
+        static const u8 to_end[] = {0x48,0x8d,0x0d};
+        static const u8 clear_call[] = {0x48,0x29,0xf9,0x31,0xc0,0xf3,0xaa,0xe8};
+        u64 first, end, target;
+        if (kernel_len < 38 || !bytes_equal(kernel, prologue, sizeof prologue) ||
+            !bytes_equal(kernel + 19, to_end, sizeof to_end) ||
+            !bytes_equal(kernel + 26, clear_call, sizeof clear_call)) fail(50L, "kernel zeroing prologue invalid");
+        first = KERNEL_PHYS + 19 + (u64)(long)(int)rd32(kernel + 15);
+        end = KERNEL_PHYS + 26 + (u64)(long)(int)rd32(kernel + 22);
+        target = KERNEL_PHYS + 38 + (u64)(long)(int)rd32(kernel + 34);
+        if (first < KERNEL_PHYS || first >= end || end > 0x200000 ||
+            target < KERNEL_PHYS || target >= first || target >= KERNEL_PHYS + kernel_len)
+            fail(51L, "kernel clear range or C entry outside mapped image");
+        trace("kernel.entry.zero", first, end - first, "kernel/entry.asm");
+        trace("kernel.entry.call_kmain", KERNEL_PHYS + 33, target, "kernel/entry.asm");
     }
-    {
-        usize i;
-        unsigned int vga_stores = 0U;
-        unsigned int debug_outs = 0U;
-        for (i = 0; i + 8UL <= kernel_len; ++i) {
-            if (kernel[i] == 0x25U) {
-                const u32 a = rd32(kernel + i + 1UL);
-                if (a >= 0x000b8000U && a < 0x000b9000U) ++vga_stores;
-            }
-            if (kernel[i] == 0xe6U && kernel[i + 1] == 0xe9U) ++debug_outs;
-        }
-        if (vga_stores < 8U) fail(52L, "kmain VGA writes missing");
-        if (debug_outs < 1U) fail(53L, "debugcon out 0xe9 missing");
-        trace("kernel.kmain.vga", 0x000b8000UL, vga_stores, "kernel/main.c:65-75");
-        trace("kernel.kmain.debugcon", 0x000000e9UL, debug_outs, "kernel/main.c:24-35,75");
-    }
-
     elf_fd = open_ro(ELF_PATH);
     if (elf_fd < 0L) fail(60L, "cannot open build/kernel.elf");
     elf_len = read_file(elf_fd, elf, sizeof elf, 60L, "cannot read kernel ELF");
     (void)syscall1(SYS_CLOSE, elf_fd);
     verify_elf_rodata(elf_len, kernel_len, &debug_addr, &banner_addr);
-    (void)banner_addr;
     {
-        usize i;
-        int referenced = 0;
-        for (i = 0; i + 5UL <= kernel_len; ++i) {
-            if (kernel[i] == 0xbaU && (u64)rd32(kernel + i + 1UL) == debug_addr) {
-                referenced = 1;
-                trace("kernel.debug_string_reference", KERNEL_PHYS + i, debug_addr, "kernel/main.c:29-35,75");
-                break;
-            }
+        int screen = 0, banner = 0, marker = 0, port = 0;
+        /* The linked kernel uses 32-bit absolute addresses for low memory. */
+        for (usize i = 0; i + 4 <= kernel_len; ++i) {
+            u32 operand = rd32(kernel + i);
+            screen |= operand == 0xb87c8U;
+            banner |= operand == banner_addr;
+            marker |= operand == debug_addr;
+            port |= kernel[i] == 0xe6 && kernel[i + 1] == 0xe9;
         }
-        if (!referenced) fail(68L, "LM64 string address is not referenced by code");
+        if (!screen || !banner || !marker || !port)
+            fail(68L, "VGA or debug console reference missing");
+        trace("kernel.console.vga", 0xb87c8UL, banner_addr, "kernel/main.c");
+        trace("kernel.console.debug", 0xe9UL, debug_addr, "kernel/main.c");
     }
 
     (void)syscall1(SYS_CLOSE, image_fd);

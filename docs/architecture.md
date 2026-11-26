@@ -29,6 +29,16 @@ The hosted oracle applies the engine's FP32 matrix-vector operation to each inpu
 
 CPU RMS normalization keeps the mean square, reciprocal root, and intermediate gradient products in double precision. The result for a two-element input of opposite-sign maximum finite FP32 values is +1 and −1 with unit weights. The interpreter grows its binding array on demand. It keeps a slot index across evaluation of an assignment's right-hand side because a nested call can reallocate the array.
 
+## Boot and physical memory
+
+The BIOS loader accepts 20- and 24-byte E820 records and stops if the map exceeds 128 entries. Kernel entry clears the zero-initialized and reserved sections before calling C. The guest reads back the active interrupt table, checks all 256 gate addresses and attributes, enables IRQ0, and waits for three ticks.
+
+The buddy allocator tracks free blocks and live allocations by order. It accepts complete usable pages above 2 MiB and excludes any page touched by an active reserved range. Heap arenas use 16 adjacent 4 KiB pages. A mapping request checks the physical range, available table space and all existing leaves before replacing any absent leaf. A conflicting span leaves existing mappings intact.
+
+## Assembly training
+
+The attention model updates its parameters after each training example. Epoch `e` starts at zero and uses a learning rate of `0.025 × 32 / (32 + e)`. The first epoch uses 0.025 and epoch 32 uses 0.0125.
+
 ## Verification boundaries
 
 QEMU boots the raw disk image with a legacy BIOS. The guest writes its long-mode, memory and tensor results to debug port 0xe9. The optional debug-exit device maps guest success to process exit 33. The verifier checks this status and a fresh transcript in a unique temporary directory. A timeout, an absent emulator, an unexpected transcript, and a triple fault fail the check.

@@ -9,6 +9,10 @@ link="-no-pie $flags"
 export ASAN_OPTIONS=detect_leaks=1:halt_on_error=1
 export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
 
+"${CC:-cc}" -std=c11 -Wall -Wextra -Wpedantic -Werror $link -I"$root/hadeed/kernel" \
+    "$root/hadeed/tests/memory_test.c" "$root/hadeed/kernel/memory.c" -o "$work/guest-memory-test"
+"$work/guest-memory-test"
+
 for component in engine retrieval/search; do
     build="$work/build/$component"
     cmake -S "$root/$component" -B "$build" -DCMAKE_BUILD_TYPE=Debug \
@@ -16,6 +20,9 @@ for component in engine retrieval/search; do
     cmake --build "$build" --parallel "$jobs"
     if [ "$component" = retrieval/search ]; then ctest --test-dir "$build" --output-on-failure; fi
 done
+
+make -C "$root/asm" -j"$jobs" "QKV_BUILD=$work/qkv" "CFLAGS=$flags" \
+    "QKV_LDFLAGS=$link" test-qkv-gradients
 
 # The Make-based components place binaries next to their sources.
 mkdir -p "$work/model" "$work/retrieval/lowlevel" "$work/retrieval/native" "$work/lang/tests"

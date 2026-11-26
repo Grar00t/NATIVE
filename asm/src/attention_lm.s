@@ -45,7 +45,8 @@ valid_bytes: .incbin "data/heldout.txt"
 .if NV <= CTX
 .error "validation corpus too short"
 .endif
-lr:      .float 0.025
+base_lr: .float 0.025
+.equ LR_HALF_EPOCHS, 32
 scale:   .float 0.06
 randdiv: .float 0.000030517578125
 quarter: .float 0.25
@@ -104,6 +105,8 @@ WV:     .skip 1024
 params_end:
 .endif
 .section .bss
+.balign 4
+lr:     .skip 4
 .balign 16
 X:      .skip 512
 Q:      .skip 64
@@ -1112,6 +1115,14 @@ _start:
     xor r12d,r12d
     .if EPOCHS > 0
 .Lepoch:
+    # eta(e) = eta(0) * 32 / (32 + e); the first update keeps the original step.
+    mov eax,LR_HALF_EPOCHS
+    cvtsi2ss xmm0,eax
+    mulss xmm0,[rip+base_lr]
+    add rax,r12
+    cvtsi2ss xmm1,rax
+    divss xmm0,xmm1
+    movss [rip+lr],xmm0
     lea rax,[rip+train_bytes]
     mov [rip+seqbase],rax
     mov dword ptr [rip+seqlen],N

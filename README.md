@@ -46,7 +46,7 @@ The desktop client opens local `.dalw` files and searches one or more indexes to
 | `engine/` | FP32 transformer, tokenizer, optimizer, training checkpoints, and generation CLI. CPU is the default backend. OpenMP and CUDA are optional |
 | `model/` | Raw FP32 model training and inference, a mapped GGUF decoder, and local query and proof tools |
 | `retrieval/` | Index builder, search API, command-line tools, and desktop client |
-| `hadeed/` | Bootloader and x86-64 kernel with page allocation and a signed matrix self-test |
+| `hadeed/` | BIOS bootloader and x86-64 kernel with timer interrupts, page and heap allocators, and a signed matrix self-test |
 
 ## Verification
 
