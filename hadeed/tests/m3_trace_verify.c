@@ -352,6 +352,13 @@ static void verify_idt_and_stubs(void)
     trace("idt.stub_targets", table.value, 48, "kernel/isr.asm");
 }
 
+static usize entry_prefix(const u8 *code, usize size)
+{
+    static const u8 endbr64[] = {0xf3, 0x0f, 0x1e, 0xfa};
+    return size >= sizeof endbr64 && bytes_equal(code, endbr64, sizeof endbr64)
+        ? sizeof endbr64 : 0;
+}
+
 static void verify_pic(void)
 {
     const struct symbol pic = find_symbol("pic_remap_irq0", 60L);
@@ -368,8 +375,10 @@ static void verify_pic(void)
         0xb0,0xff,0xe6,0xa1,0xe6,0x80
     };
     const u8 *code = kernel_ptr(pic.value, (usize)pic.size, 61L, "PIC function outside kernel");
-    if (pic.size < sizeof expected || !bytes_equal(code, expected, sizeof expected)) fail(62L, "8259 ICW/mask sequence mismatch");
-    trace("pic.icw1_icw4_masks", pic.value, 0x11202804020101feUL, "kernel/pic.c");
+    usize start = entry_prefix(code, pic.size);
+    if (pic.size - start < sizeof expected || !bytes_equal(code + start, expected, sizeof expected))
+        fail(62L, "8259 ICW/mask sequence mismatch");
+    trace("pic.icw1_icw4_masks", pic.value + start, 0x11202804020101feUL, "kernel/pic.c");
 }
 
 static void verify_pit(void)
@@ -377,9 +386,11 @@ static void verify_pit(void)
     const struct symbol pit = find_symbol("pit_init_100hz", 70L);
     static const u8 expected[] = {0xb0,0x36,0xe6,0x43,0xb0,0x9c,0xe6,0x40,0xb0,0x2e,0xe6,0x40};
     const u8 *code = kernel_ptr(pit.value, (usize)pit.size, 71L, "PIT function outside kernel");
-    if (pit.size < sizeof expected || !bytes_equal(code, expected, sizeof expected)) fail(72L, "PIT mode/divisor sequence mismatch");
-    trace("pit.channel0_mode3", pit.value, 0x36UL, "kernel/pit.c");
-    trace("pit.divisor_11932", pit.value + 4UL, 0x2e9cUL, "kernel/pit.c");
+    usize start = entry_prefix(code, pit.size);
+    if (pit.size - start < sizeof expected || !bytes_equal(code + start, expected, sizeof expected))
+        fail(72L, "PIT mode/divisor sequence mismatch");
+    trace("pit.channel0_mode3", pit.value + start, 0x36UL, "kernel/pit.c");
+    trace("pit.divisor_11932", pit.value + start + 4UL, 0x2e9cUL, "kernel/pit.c");
 }
 
 static void verify_irq0_counter(void)

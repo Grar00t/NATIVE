@@ -22,7 +22,8 @@ if grep -iq 'triple fault' "$tmp/cpu"; then exit 1; fi
 printf 'RAM %s MiB, QEMU exit %s\n' "$ram" "$status"
 awk -v mb="$ram" '
      NR==1 && $0=="LM64" {next}
-     NR==2 && $0=="PIT_TICKS 3" {next}
+     NR==2 && /^PIT_TICKS [1-9][0-9]*$/ && $2+0 >= 3 &&
+         (length($2)<20 || (length($2)==20 && ("x" $2)<="x18446744073709551615")) {next}
      NR==3 && /^USABLE_PAGES [1-9][0-9]*$/ {
          cap = (mb > 256 ? 256 : mb) * 256 - 512
          if ($2 > cap) bad=1

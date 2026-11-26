@@ -17,7 +17,7 @@ KERNEL_LBA := 9
 IMAGE_SECTORS := 2880
 
 CFLAGS := -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -ffreestanding -nostdlib \
-          -fno-stack-protector -fno-pic -mno-red-zone -m64 -mgeneral-regs-only
+          -fno-stack-protector -fno-pic -mno-red-zone -m64 -mgeneral-regs-only $(EXTRA_CFLAGS)
 
 KERNEL_OBJS := \
 	$(BUILD)/kernel_entry.o \
